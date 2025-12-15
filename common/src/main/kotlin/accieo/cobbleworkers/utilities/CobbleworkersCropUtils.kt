@@ -52,13 +52,9 @@ object CobbleworkersCropUtils {
         CobblemonBlocks.GALARICA_NUT_BUSH
     )
 
-    fun addCompatibility(externalBlocks: Set<Block>) {
-        validCropBlocks.addAll(externalBlocks)
-    }
+    fun addCompatibility(externalBlocks: Set<Block>) = validCropBlocks.addAll(externalBlocks)
 
-    fun isCroptopia(block: Block): Boolean {
-        return Registries.BLOCK.getId(block).namespace == "croptopia"
-    }
+    fun isCroptopia(block: Block): Boolean = Registries.BLOCK.getId(block).namespace == "croptopia"
 
     fun isHarvestable(state: BlockState): Boolean {
         val block = state.block
@@ -72,9 +68,7 @@ object CobbleworkersCropUtils {
         return possibleTargets
             .filter { pos ->
                 val state = world.getBlockState(pos)
-                isHarvestable(state) &&
-                        isMatureCrop(world, pos) &&
-                        !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
+                isHarvestable(state) && isMatureCrop(world, pos) && !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
             }
             .minByOrNull { it.getSquaredDistance(origin) }
     }
@@ -107,8 +101,18 @@ object CobbleworkersCropUtils {
             pokemonHeldItems[pokemonEntity.pokemon.uuid] = drops
         }
 
+        val ageProp = getAgeProperty(blockState)
         val id = Registries.BLOCK.getId(block)
         val path = id.path
+
+        if (block == CobblemonBlocks.HEARTY_GRAINS && ageProp != null && blockState.contains(Properties.DOUBLE_BLOCK_HALF)) {
+            val lowerState = blockState.with(ageProp, 5).with(Properties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.LOWER)
+            val upperState = blockState.with(ageProp, 5).with(Properties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER)
+
+            world.setBlockState(blockPos, lowerState, Block.NOTIFY_LISTENERS)
+            world.setBlockState(blockPos.up(), upperState, Block.NOTIFY_LISTENERS)
+            return
+        }
 
         if (blockState.contains(Properties.DOUBLE_BLOCK_HALF)) {
             val upperPos = blockPos.up()
@@ -118,17 +122,12 @@ object CobbleworkersCropUtils {
         }
 
         val newState = if (config.shouldReplantCrops) {
-            val ageProp = getAgeProperty(blockState)
             when {
                 path == FarmersDelightBlocks.RICE_PANICLES -> Blocks.AIR.defaultState
                 (path == FarmersDelightBlocks.TOMATOES || path in FarmersDelightBlocks.MUSHROOMS) && blockState.contains(AGE_3) -> blockState.with(AGE_3, 0)
-
                 ageProp != null -> {
                     val resetAge = when {
-                        block is SweetBerryBushBlock ||
-                                block == CobblemonBlocks.GALARICA_NUT_BUSH ||
-                                (isCroptopia(block) && path.contains("berry")) -> 1
-
+                        block is SweetBerryBushBlock || block == CobblemonBlocks.GALARICA_NUT_BUSH || (isCroptopia(block) && path.contains("berry")) -> 1
                         block == CobblemonBlocks.REVIVAL_HERB -> RevivalHerbBlock.MIN_AGE
                         else -> 0
                     }
@@ -138,11 +137,7 @@ object CobbleworkersCropUtils {
                 else -> Blocks.AIR.defaultState
             }
         } else {
-            if (block is SweetBerryBushBlock || block == CobblemonBlocks.GALARICA_NUT_BUSH) {
-                blockState.with(AGE_3, 1)
-            } else {
-                Blocks.AIR.defaultState
-            }
+            if (block is SweetBerryBushBlock || block == CobblemonBlocks.GALARICA_NUT_BUSH) blockState.with(AGE_3, 1) else Blocks.AIR.defaultState
         }
 
         world.setBlockState(blockPos, newState, Block.NOTIFY_LISTENERS)
@@ -151,9 +146,8 @@ object CobbleworkersCropUtils {
     private fun isMatureCrop(world: World, pos: BlockPos): Boolean {
         val state = world.getBlockState(pos)
         val block = state.block
-        val path = Registries.BLOCK.getId(block).path
-
         val ageProp = getAgeProperty(state)
+
         if (ageProp != null) {
             val maxAge = ageProp.values.maxOrNull() ?: 0
             return state.get(ageProp) >= maxAge
@@ -162,12 +156,9 @@ object CobbleworkersCropUtils {
         return when {
             block is HeartyGrainsBlock -> block.getAge(state) == HeartyGrainsBlock.MATURE_AGE
             block is CaveVines -> state.get(CaveVinesBodyBlock.BERRIES)
-            path in FarmersDelightBlocks.MUSHROOMS && state.contains(AGE_3) -> state.get(AGE_3) == 3
             else -> false
         }
     }
 
-    private fun getAgeProperty(state: BlockState): IntProperty? {
-        return state.properties.filterIsInstance<IntProperty>().firstOrNull { it.name == "age" }
-    }
+    private fun getAgeProperty(state: BlockState): IntProperty? = state.properties.filterIsInstance<IntProperty>().firstOrNull { it.name == "age" }
 }
