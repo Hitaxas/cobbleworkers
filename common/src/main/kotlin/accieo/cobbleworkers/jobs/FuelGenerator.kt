@@ -85,14 +85,28 @@ object FuelGenerator : Worker {
         val id = Registries.BLOCK.getId(state.block).toString()
 
         if (id.contains("cookingforblockheads") && id.contains("oven")) {
-            // Check NBT for items in the oven
+            // Oven slot layout:
+            // 0-2: Input (raw food)
+            // 3: Fuel
+            // 4-6: Output (cooked food) - IGNORE THESE
+            // 7-15: Processing buffer (items being cooked)
+            // 16-19: Tools
             val nbt = blockEntity.createNbt(world.registryManager)
             if (nbt.contains("ItemHandler")) {
                 val itemHandler = nbt.getCompound("ItemHandler")
                 if (itemHandler.contains("Items")) {
                     val items = itemHandler.getList("Items", 10)
-                    // Check if there are ANY items at all (any slot)
-                    return items.size > 0
+                    for (i in 0 until items.size) {
+                        val itemStackNbt = items.getCompound(i)
+                        if (itemStackNbt.contains("Slot") && itemStackNbt.contains("id")) {
+                            val slot = itemStackNbt.getByte("Slot").toInt()
+                            // Only check INPUT slots (0-2) and PROCESSING slots (7-15)
+                            // IGNORE output slots (4-6) where finished cooked food sits
+                            if (slot in 0..2 || slot in 7..15) {
+                                return true
+                            }
+                        }
+                    }
                 }
             }
             return false
