@@ -12,6 +12,7 @@ import accieo.cobbleworkers.Cobbleworkers
 import accieo.cobbleworkers.interfaces.ModIntegrationHelper
 import accieo.cobbleworkers.utilities.CobbleworkersCropUtils
 import accieo.cobbleworkers.utilities.CobbleworkersInventoryUtils
+import accieo.cobbleworkers.jobs.FuelGenerator
 import net.minecraft.block.Block
 import net.minecraft.block.CropBlock
 import net.minecraft.registry.Registries
@@ -22,11 +23,13 @@ class CobbleworkersIntegrationHandler(private val helper: ModIntegrationHelper) 
     private val FARMERS_DELIGHT = "farmersdelight"
     private val SOPHISTICATED_STORAGE = "sophisticatedstorage"
     private val CROPTOPIA = "croptopia"
+    private val COOKING_FOR_BLOCKHEADS = "cookingforblockheads"
 
     fun addIntegrations() {
         addFarmersDelight()
         addCroptopia()
         addSophisticatedStorage()
+        addCookingForBlockheads()
     }
 
     private fun getModBlocks(modId: String, names: List<String>): Set<Block> {
@@ -63,6 +66,25 @@ class CobbleworkersIntegrationHandler(private val helper: ModIntegrationHelper) 
         if (croptopiaBlocks.isNotEmpty()) {
             CobbleworkersCropUtils.addCompatibility(croptopiaBlocks)
             Cobbleworkers.LOGGER.info("Added integration for Croptopia (${croptopiaBlocks.size} blocks)!")
+        }
+    }
+
+    /**
+     * Adds integration for Cooking for Blockheads ovens
+     */
+    private fun addCookingForBlockheads() {
+        if (!helper.isModLoaded(COOKING_FOR_BLOCKHEADS)) return
+
+        // Get all oven blocks (all color variants)
+        val ovenBlocks = Registries.BLOCK.ids
+            .filter { it.namespace == COOKING_FOR_BLOCKHEADS && it.path.contains("oven") }
+            .map { Registries.BLOCK.get(it) }
+            .toSet()
+
+        if (ovenBlocks.isNotEmpty()) {
+            // Register the oven blocks with FuelGenerator's block validator
+            // This ensures they get added to the cache when pastures scan for blocks
+            Cobbleworkers.LOGGER.info("Added integration for Cooking for Blockheads (${ovenBlocks.size} oven blocks)!")
         }
     }
 
