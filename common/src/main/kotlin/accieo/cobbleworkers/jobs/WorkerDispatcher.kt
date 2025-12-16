@@ -12,6 +12,8 @@ import accieo.cobbleworkers.enums.JobType
 import accieo.cobbleworkers.interfaces.Worker
 import accieo.cobbleworkers.utilities.DeferredBlockScanner
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
+import com.cobblemon.mod.common.entity.PoseType
+import java.util.UUID
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
 import kotlin.collections.filter
@@ -73,5 +75,24 @@ object WorkerDispatcher {
         workers
             .filter { it.shouldRun(pokemonEntity) }
             .forEach { it.tick(world, pastureOrigin, pokemonEntity) }
+    }
+
+    fun forceAwakeIfWorking(pokemonEntity: PokemonEntity) {
+        val pokemonUuid: UUID = pokemonEntity.pokemon.uuid
+        
+        val isWorking = workers.any { worker ->
+            when (worker) {
+                is FuelGenerator -> worker.isPokemonTending(pokemonUuid)
+                else -> false
+            }
+        }
+
+        if (isWorking) {
+            val currentPose = pokemonEntity.getDataTracker().get(PokemonEntity.POSE_TYPE)
+            if (currentPose == PoseType.SLEEP) {
+                // Force the pose to STAND to interrupt sleep
+                pokemonEntity.getDataTracker().set(PokemonEntity.POSE_TYPE, PoseType.STAND)
+            }
+        }
     }
 }

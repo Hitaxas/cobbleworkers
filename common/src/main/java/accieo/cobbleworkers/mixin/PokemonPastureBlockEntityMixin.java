@@ -54,6 +54,8 @@ public class PokemonPastureBlockEntityMixin {
 			PokemonEntity pokemonEntity = pokemon.getEntity();
 			if (pokemonEntity == null) continue;
 
+			WorkerDispatcher.INSTANCE.forceAwakeIfWorking(pokemonEntity);
+
 			PoseType poseType = pokemonEntity.getDataTracker().get(PokemonEntity.getPOSE_TYPE());
 			if (poseType == PoseType.SLEEP) continue;
 
