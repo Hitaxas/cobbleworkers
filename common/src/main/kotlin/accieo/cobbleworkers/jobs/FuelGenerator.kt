@@ -20,6 +20,9 @@ import net.minecraft.block.AbstractFurnaceBlock
 import net.minecraft.block.BlockState
 import net.minecraft.block.entity.AbstractFurnaceBlockEntity
 import net.minecraft.registry.Registries
+import net.minecraft.server.world.ServerWorld
+import net.minecraft.sound.SoundCategory
+import net.minecraft.sound.SoundEvents
 import net.minecraft.state.property.BooleanProperty
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
@@ -30,6 +33,9 @@ object FuelGenerator : Worker {
     private val config = CobbleworkersConfigHolder.config.fuel
     private val cooldownTicks get() = config.fuelGenerationCooldownSeconds * 20L
     private val lastGenerationTime = mutableMapOf<UUID, Long>()
+    private val pokemonTendingFurnaces = mutableMapOf<UUID, BlockPos>() // Track which pokemon is tending which furnace
+    private val lastSoundTime = mutableMapOf<UUID, Long>() // Track last time fire sound was played
+    private const val SOUND_INTERVAL = 30L // Play fire sound every 1.5 seconds
 
     override val jobType: JobType = JobType.FuelGenerator
 
@@ -161,11 +167,113 @@ object FuelGenerator : Worker {
         return false
     }
 
+    /**
+     * Checks if furnace/oven is currently burning and has items cooking.
+     */
+    private fun isCooking(world: World, pos: BlockPos): Boolean {
+        val blockEntity = world.getBlockEntity(pos) ?: return false
+        val state = world.getBlockState(pos)
+        val id = Registries.BLOCK.getId(state.block).toString()
+
+        if (id.contains("cookingforblockheads") && id.contains("oven")) {
+            val nbt = blockEntity.createNbt(world.registryManager)
+            val burnTime = nbt.getInt("BurnTime")
+
+            // Check if burning and has items in processing slots
+            if (burnTime > 0) {
+                if (nbt.contains("ItemHandler")) {
+                    val itemHandler = nbt.getCompound("ItemHandler")
+                    if (itemHandler.contains("Items")) {
+                        val items = itemHandler.getList("Items", 10)
+                        for (i in 0 until items.size) {
+                            val itemStackNbt = items.getCompound(i)
+                            if (itemStackNbt.contains("Slot") && itemStackNbt.contains("id")) {
+                                val slot = itemStackNbt.getByte("Slot").toInt()
+                                // Check if items are in INPUT (0-2) or PROCESSING (7-15) slots
+                                if (slot in 0..2 || slot in 7..15) {
+                                    return true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return false
+        }
+
+        // For vanilla furnaces, check if lit and has items
+        if (state.block is AbstractFurnaceBlock) {
+            try {
+                state.entries.keys.find { it.name == "lit" }?.let { prop ->
+                    if (prop is BooleanProperty && state.get(prop) == true) {
+                        if (blockEntity is AbstractFurnaceBlockEntity) {
+                            return !blockEntity.getStack(0).isEmpty
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                return false
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Plays fire crackling sound near the furnace.
+     */
+    private fun playFireSound(world: World, pos: BlockPos) {
+        if (world is ServerWorld) {
+            world.playSound(
+                null,
+                pos,
+                SoundEvents.BLOCK_FIRE_AMBIENT,
+                SoundCategory.BLOCKS,
+                0.5f,
+                1.0f
+            )
+        }
+    }
+
     private fun handleFuelGeneration(world: World, origin: BlockPos, pokemonEntity: PokemonEntity) {
         val pokemonId = pokemonEntity.pokemon.uuid
         val now = world.time
-        val lastTime = lastGenerationTime[pokemonId] ?: 0L
+        val tendingPos = pokemonTendingFurnaces[pokemonId]
 
+        // If pokemon is tending a furnace, check if it's still cooking
+        if (tendingPos != null) {
+            // Check if furnace still exists and is valid
+            if (!blockValidator(world, tendingPos) || !isCooking(world, tendingPos)) {
+                // Cooking done or furnace removed, release
+                pokemonTendingFurnaces.remove(pokemonId)
+                lastSoundTime.remove(pokemonId)
+                CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+                return
+            }
+
+            // Stop any navigation and make pokemon stand still facing the furnace
+            pokemonEntity.navigation.stop()
+
+            // Make pokemon look at the furnace
+            val furnaceCenter = tendingPos.toCenterPos()
+            val dx = furnaceCenter.x - pokemonEntity.x
+            val dz = furnaceCenter.z - pokemonEntity.z
+            val yaw = (Math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
+            pokemonEntity.headYaw = yaw
+            pokemonEntity.bodyYaw = yaw
+            pokemonEntity.yaw = yaw
+
+            // Play fire sound periodically
+            val lastSound = lastSoundTime[pokemonId] ?: 0L
+            if (now - lastSound >= SOUND_INTERVAL) {
+                playFireSound(world, tendingPos)
+                lastSoundTime[pokemonId] = now
+            }
+            return
+        }
+
+        // Not tending anything, check cooldown
+        val lastTime = lastGenerationTime[pokemonId] ?: 0L
         if (now - lastTime < cooldownTicks) return
 
         val closestFurnace = findClosestFurnace(world, origin) ?: return
@@ -186,9 +294,60 @@ object FuelGenerator : Worker {
             if (hasItemsToSmelt(world, closestFurnace)) {
                 addBurnTime(world, closestFurnace)
                 lastGenerationTime[pokemonId] = now
+
+                // If furnace is now cooking, mark pokemon as tending it
+                if (isCooking(world, closestFurnace)) {
+                    pokemonTendingFurnaces[pokemonId] = closestFurnace
+                    lastSoundTime[pokemonId] = now
+
+                    // Position pokemon in front of furnace/oven facing it
+                    positionPokemonAtFurnace(world, closestFurnace, pokemonEntity)
+                    playFireSound(world, closestFurnace)
+                    // Don't release target - keep it claimed while tending
+                } else {
+                    CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+                }
+            } else {
+                CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
             }
-            CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
         }
+    }
+
+    /**
+     * Positions the Pokemon in front of the furnace/oven, facing it.
+     */
+    private fun positionPokemonAtFurnace(world: World, furnacePos: BlockPos, pokemonEntity: PokemonEntity) {
+        val state = world.getBlockState(furnacePos)
+
+        // Try to get the facing direction of the furnace/oven
+        val facing = try {
+            state.entries.keys.find { it.name == "facing" }?.let { prop ->
+                state.get(prop) as? net.minecraft.util.math.Direction
+            }
+        } catch (e: Exception) {
+            null
+        } ?: net.minecraft.util.math.Direction.NORTH // Default to north if can't determine
+
+        // Position pokemon 1.5 blocks in front of the furnace
+        val offset = facing.vector
+        val targetPos = furnacePos.add(offset.x * 2, 0, offset.z * 2)
+        val targetCenter = targetPos.toCenterPos()
+
+        // Teleport pokemon to position in front of furnace
+        pokemonEntity.refreshPositionAndAngles(targetCenter.x, pokemonEntity.y, targetCenter.z, pokemonEntity.yaw, pokemonEntity.pitch)
+
+        // Make pokemon face the furnace
+        val furnaceCenter = furnacePos.toCenterPos()
+        val dx = furnaceCenter.x - pokemonEntity.x
+        val dz = furnaceCenter.z - pokemonEntity.z
+        val yaw = (Math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
+        pokemonEntity.headYaw = yaw
+        pokemonEntity.bodyYaw = yaw
+        pokemonEntity.yaw = yaw
+
+        // Stop all movement
+        pokemonEntity.navigation.stop()
+        pokemonEntity.setVelocity(0.0, pokemonEntity.velocity.y, 0.0)
     }
 
     private fun addBurnTime(world: World, furnacePos: BlockPos) {
@@ -231,7 +390,7 @@ object FuelGenerator : Worker {
                     } catch (ex2: Exception) {
                         // Last resort: direct field access
                         try {
-                            val burnTimeField = blockEntity.javaClass.getDeclaredField("burnTime")
+                            val burnTimeField = blockEntity.javaClass.getDeclaredField("furnaceBurnTime")
                             burnTimeField.isAccessible = true
                             burnTimeField.setInt(blockEntity, addedBurnTime)
 

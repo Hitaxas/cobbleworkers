@@ -45,12 +45,18 @@ object CobbleworkersCropUtils {
         Blocks.SWEET_BERRY_BUSH,
         Blocks.CAVE_VINES,
         Blocks.CAVE_VINES_PLANT,
+        Blocks.PUMPKIN,
+        Blocks.MELON,
         CobblemonBlocks.REVIVAL_HERB,
         CobblemonBlocks.MEDICINAL_LEEK,
         CobblemonBlocks.VIVICHOKE_SEEDS,
         CobblemonBlocks.HEARTY_GRAINS,
         CobblemonBlocks.GALARICA_NUT_BUSH
     )
+
+    // Track breaking progress for pumpkins/melons: BlockPos -> (startTime, pokemonUUID)
+    private val breakingBlocks = mutableMapOf<BlockPos, Pair<Long, UUID>>()
+    private const val BREAK_TIME_TICKS = 40L // 2 seconds (20 ticks per second)
 
     fun addCompatibility(externalBlocks: Set<Block>) = validCropBlocks.addAll(externalBlocks)
 
@@ -73,6 +79,91 @@ object CobbleworkersCropUtils {
             .minByOrNull { it.getSquaredDistance(origin) }
     }
 
+    /**
+     * Checks if a block requires breaking animation (pumpkins/melons).
+     */
+    fun requiresBreaking(block: Block): Boolean {
+        return block == Blocks.PUMPKIN || block == Blocks.MELON
+    }
+
+    /**
+     * Starts breaking a block and returns false if still breaking, true if complete.
+     * Also plays breaking sounds periodically.
+     */
+    fun breakBlock(world: World, blockPos: BlockPos, pokemonEntity: PokemonEntity): Boolean {
+        val block = world.getBlockState(blockPos).block
+        if (!requiresBreaking(block)) return true
+
+        val currentTime = world.time
+        val pokemonUUID = pokemonEntity.pokemon.uuid
+
+        val breakData = breakingBlocks[blockPos]
+
+        if (breakData == null || breakData.second != pokemonUUID) {
+            // Start breaking
+            breakingBlocks[blockPos] = Pair(currentTime, pokemonUUID)
+            showBreakProgress(world, blockPos, 0)
+            playBreakSound(world, blockPos, block)
+            return false
+        }
+
+        val elapsedTicks = currentTime - breakData.first
+        val progress = (elapsedTicks.toFloat() / BREAK_TIME_TICKS * 10).toInt().coerceIn(0, 10)
+
+        // Play sound periodically (every 8 ticks = 0.4 seconds)
+        if (elapsedTicks % 8L == 0L) {
+            playBreakSound(world, blockPos, block)
+        }
+
+        // Update break progress animation
+        if (progress < 10) {
+            showBreakProgress(world, blockPos, progress)
+            return false
+        }
+
+        // Breaking complete
+        breakingBlocks.remove(blockPos)
+        showBreakProgress(world, blockPos, -1) // Clear animation
+        return true
+    }
+
+    /**
+     * Cancels breaking progress for a block.
+     */
+    fun cancelBreaking(blockPos: BlockPos, world: World) {
+        if (breakingBlocks.remove(blockPos) != null) {
+            showBreakProgress(world, blockPos, -1)
+        }
+    }
+
+    /**
+     * Shows block breaking progress animation.
+     */
+    private fun showBreakProgress(world: World, pos: BlockPos, progress: Int) {
+        if (world is ServerWorld) {
+            // Use a unique entity ID based on position for the break animation
+            val breakerId = pos.asLong().toInt()
+            world.setBlockBreakingInfo(breakerId, pos, progress)
+        }
+    }
+
+    /**
+     * Plays the block breaking sound.
+     */
+    private fun playBreakSound(world: World, pos: BlockPos, block: Block) {
+        if (world is ServerWorld) {
+            val soundGroup = block.defaultState.soundGroup
+            world.playSound(
+                null,
+                pos,
+                soundGroup.hitSound,
+                net.minecraft.sound.SoundCategory.BLOCKS,
+                (soundGroup.volume + 1.0f) / 2.0f,
+                soundGroup.pitch * 0.8f
+            )
+        }
+    }
+
     fun harvestCrop(
         world: World,
         blockPos: BlockPos,
@@ -88,6 +179,13 @@ object CobbleworkersCropUtils {
         if (blockState.contains(Properties.DOUBLE_BLOCK_HALF) &&
             blockState.get(Properties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.UPPER) {
             return
+        }
+
+        // For pumpkins/melons, check if breaking is complete
+        if (requiresBreaking(block)) {
+            if (!breakBlock(world, blockPos, pokemonEntity)) {
+                return // Still breaking, don't harvest yet
+            }
         }
 
         val lootParams = LootContextParameterSet.Builder(world as ServerWorld)
@@ -122,6 +220,12 @@ object CobbleworkersCropUtils {
             }
         }
 
+        // For pumpkins and melons, just break the fruit block (don't replant)
+        if (block == Blocks.PUMPKIN || block == Blocks.MELON) {
+            world.setBlockState(blockPos, Blocks.AIR.defaultState, Block.NOTIFY_LISTENERS)
+            return
+        }
+
         val newState = if (config.shouldReplantCrops) {
             when {
                 path == FarmersDelightBlocks.RICE_PANICLES -> Blocks.AIR.defaultState
@@ -152,6 +256,12 @@ object CobbleworkersCropUtils {
     private fun isMatureCrop(world: World, pos: BlockPos): Boolean {
         val state = world.getBlockState(pos)
         val block = state.block
+
+        // Pumpkins and melons are always "mature" since they're the fruit blocks
+        if (block == Blocks.PUMPKIN || block == Blocks.MELON) {
+            return true
+        }
+
         val ageProp = getAgeProperty(state)
 
         if (ageProp != null) {

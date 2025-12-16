@@ -29,6 +29,7 @@ import kotlin.text.lowercase
 object CropHarvester : Worker {
     private val heldItemsByPokemon = mutableMapOf<UUID, List<ItemStack>>()
     private val failedDepositLocations = mutableMapOf<UUID, MutableSet<BlockPos>>()
+    private val pokemonBreakingBlocks = mutableMapOf<UUID, BlockPos>() // Track which pokemon is breaking which block
     private val config = CobbleworkersConfigHolder.config.cropHarvest
 
     override val jobType: JobType = JobType.CropHarvester
@@ -62,15 +63,53 @@ object CropHarvester : Worker {
             failedDepositLocations.remove(pokemonId)
             handleHarvesting(world, origin, pokemonEntity)
         } else {
+            // Clear breaking state when depositing items
+            val breakingPos = pokemonBreakingBlocks.remove(pokemonId)
+            if (breakingPos != null) {
+                CobbleworkersCropUtils.cancelBreaking(breakingPos, world)
+            }
             CobbleworkersInventoryUtils.handleDepositing(world, origin, pokemonEntity, heldItems, failedDepositLocations, heldItemsByPokemon)
         }
     }
 
     /**
-     * Handles logic for finding and harvesting an apricorn when the Pokémon is not holding items.
+     * Handles logic for finding and harvesting a crop when the Pokémon is not holding items.
      */
     private fun handleHarvesting(world: World, origin: BlockPos, pokemonEntity: PokemonEntity) {
         val pokemonId = pokemonEntity.pokemon.uuid
+        val breakingPos = pokemonBreakingBlocks[pokemonId]
+
+        // If currently breaking a block, continue breaking it
+        if (breakingPos != null) {
+            val blockState = world.getBlockState(breakingPos)
+
+            // Check if block still exists and is valid
+            if (!CobbleworkersCropUtils.isHarvestable(blockState) || !world.getBlockState(breakingPos).isOf(blockState.block)) {
+                // Block was removed or changed, cancel breaking
+                pokemonBreakingBlocks.remove(pokemonId)
+                CobbleworkersCropUtils.cancelBreaking(breakingPos, world)
+                CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+                return
+            }
+
+            // Ensure pokemon stays at the block
+            if (!CobbleworkersNavigationUtils.isPokemonAtPosition(pokemonEntity, breakingPos)) {
+                CobbleworkersNavigationUtils.navigateTo(pokemonEntity, breakingPos)
+                return
+            }
+
+            // Continue harvesting (which includes breaking for pumpkins/melons)
+            CobbleworkersCropUtils.harvestCrop(world, breakingPos, pokemonEntity, heldItemsByPokemon, config)
+
+            // Check if harvest completed (items were added)
+            if (heldItemsByPokemon.containsKey(pokemonId)) {
+                pokemonBreakingBlocks.remove(pokemonId)
+                CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+            }
+            return
+        }
+
+        // Not currently breaking anything, find a new crop
         val closestCrop = CobbleworkersCropUtils.findClosestCrop(world, origin) ?: return
         val currentTarget = CobbleworkersNavigationUtils.getTarget(pokemonId, world)
 
@@ -86,8 +125,20 @@ object CropHarvester : Worker {
         }
 
         if (CobbleworkersNavigationUtils.isPokemonAtPosition(pokemonEntity, currentTarget)) {
+            val blockState = world.getBlockState(closestCrop)
+
+            // If this block requires breaking (pumpkin/melon), mark it as being broken
+            if (CobbleworkersCropUtils.requiresBreaking(blockState.block)) {
+                pokemonBreakingBlocks[pokemonId] = closestCrop
+            }
+
+            // Start harvesting (which will begin breaking for pumpkins/melons)
             CobbleworkersCropUtils.harvestCrop(world, closestCrop, pokemonEntity, heldItemsByPokemon, config)
-            CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+
+            // Only release target if harvest completed immediately (non-breaking blocks)
+            if (!CobbleworkersCropUtils.requiresBreaking(blockState.block) && heldItemsByPokemon.containsKey(pokemonId)) {
+                CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
+            }
         }
     }
 
