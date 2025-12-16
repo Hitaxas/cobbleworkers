@@ -39,10 +39,6 @@ object FuelGenerator : Worker {
 
     override val jobType: JobType = JobType.FuelGenerator
 
-    fun isPokemonTending(pokemonUuid: UUID): Boolean {
-        return pokemonTendingFurnaces.containsKey(pokemonUuid)
-    }
-
     /**
      * Supports Vanilla Furnaces AND Cooking for Blockheads Oven.
      */
