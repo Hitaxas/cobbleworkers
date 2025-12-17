@@ -62,9 +62,11 @@ object CobbleworkersCropUtils {
 
     fun isCroptopia(block: Block): Boolean = Registries.BLOCK.getId(block).namespace == "croptopia"
 
+    fun isBiomesWeveGone(block: Block): Boolean = Registries.BLOCK.getId(block).namespace == "biomeswevegone"
+
     fun isHarvestable(state: BlockState): Boolean {
         val block = state.block
-        return block in validCropBlocks || isCroptopia(block) || block is CropBlock
+        return block in validCropBlocks || isCroptopia(block) || isBiomesWeveGone(block) || block is CropBlock
     }
 
     fun findAvailableCrop(world: World, origin: BlockPos): BlockPos? {
@@ -84,7 +86,17 @@ object CobbleworkersCropUtils {
             .minByOrNull { it.getSquaredDistance(origin) }
     }
 
-    fun findClosestCrop(world: World, origin: BlockPos): BlockPos? = findAvailableCrop(world, origin)
+    fun findClosestCrop(world: World, origin: BlockPos): BlockPos? {
+        val possibleTargets = CobbleworkersCacheManager.getTargets(origin, JobType.CropHarvester)
+        if (possibleTargets.isEmpty()) return null
+
+        return possibleTargets
+            .filter { pos ->
+                val state = world.getBlockState(pos)
+                isHarvestable(state) && isMatureCrop(world, pos) && !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
+            }
+            .minByOrNull { it.getSquaredDistance(origin) }
+    }
 
     /**
      * Checks if a block requires breaking animation (pumpkins/melons).
@@ -95,6 +107,7 @@ object CobbleworkersCropUtils {
 
     /**
      * Starts breaking a block and returns false if still breaking, true if complete.
+     * Also plays breaking sounds periodically.
      */
     fun breakBlock(world: World, blockPos: BlockPos, pokemonEntity: PokemonEntity): Boolean {
         val block = world.getBlockState(blockPos).block
@@ -105,11 +118,7 @@ object CobbleworkersCropUtils {
 
         val breakData = breakingBlocks[blockPos]
 
-        if (breakData != null && breakData.second != pokemonUUID) {
-            return false
-        }
-
-        if (breakData == null) {
+        if (breakData == null || breakData.second != pokemonUUID) {
             // Start breaking
             breakingBlocks[blockPos] = Pair(currentTime, pokemonUUID)
             showBreakProgress(world, blockPos, 0)
@@ -151,6 +160,7 @@ object CobbleworkersCropUtils {
      */
     private fun showBreakProgress(world: World, pos: BlockPos, progress: Int) {
         if (world is ServerWorld) {
+            // Use a unique entity ID based on position for the break animation
             val breakerId = pos.asLong().toInt()
             world.setBlockBreakingInfo(breakerId, pos, progress)
         }
@@ -241,6 +251,7 @@ object CobbleworkersCropUtils {
                 (path == FarmersDelightBlocks.TOMATOES || path in FarmersDelightBlocks.MUSHROOMS) && blockState.contains(AGE_3) -> blockState.with(AGE_3, 0)
                 ageProp != null -> {
                     val resetAge = when {
+                        // Croptopia Berry Bushes: Only reduce by 1 stage
                         isCroptopia(block) && path.contains("berry") -> {
                             (blockState.get(ageProp) - 1).coerceAtLeast(0)
                         }
@@ -265,6 +276,7 @@ object CobbleworkersCropUtils {
         val state = world.getBlockState(pos)
         val block = state.block
 
+        // Pumpkins and melons are always "mature" since they're the fruit blocks
         if (block == Blocks.PUMPKIN || block == Blocks.MELON) {
             return true
         }

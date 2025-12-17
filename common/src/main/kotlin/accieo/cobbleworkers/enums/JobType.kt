@@ -17,6 +17,7 @@ enum class JobType {
     CropHarvester,
     CropIrrigator,
     DiveLooter,
+// Electrician,
     FireExtinguisher,
     FishingLootGenerator,
     FuelGenerator,

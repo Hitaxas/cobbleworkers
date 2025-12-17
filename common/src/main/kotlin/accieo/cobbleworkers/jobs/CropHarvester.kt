@@ -17,6 +17,7 @@ import accieo.cobbleworkers.utilities.CobbleworkersNavigationUtils
 import accieo.cobbleworkers.utilities.CobbleworkersTypeUtils
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.item.ItemStack
+import net.minecraft.registry.Registries
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
 import java.util.UUID
@@ -33,14 +34,21 @@ object CropHarvester : Worker {
     private val config = CobbleworkersConfigHolder.config.cropHarvest
 
     override val jobType: JobType = JobType.CropHarvester
+
     override val blockValidator: ((World, BlockPos) -> Boolean) = { world: World, pos: BlockPos ->
         val state = world.getBlockState(pos)
-        state.block in CobbleworkersCropUtils.validCropBlocks
+
+        // Existing supported crops
+        state.block in CobbleworkersCropUtils.validCropBlocks ||
+
+                // BYG BLUEBERRY SUPPORT
+                Registries.BLOCK.getId(state.block).toString() == "biomeswevegone:blueberry_bush"
     }
 
     override fun shouldRun(pokemonEntity: PokemonEntity): Boolean {
         if (!config.cropHarvestersEnabled) return false
-        return CobbleworkersTypeUtils.isAllowedByType(config.typeHarvestsCrops, pokemonEntity) || isDesignatedHarvester(pokemonEntity)
+        return CobbleworkersTypeUtils.isAllowedByType(config.typeHarvestsCrops, pokemonEntity)
+                || isDesignatedHarvester(pokemonEntity)
     }
 
     override fun tick(world: World, origin: BlockPos, pokemonEntity: PokemonEntity) {
@@ -55,7 +63,14 @@ object CropHarvester : Worker {
             if (breakingPos != null) {
                 CobbleworkersCropUtils.cancelBreaking(breakingPos, world)
             }
-            CobbleworkersInventoryUtils.handleDepositing(world, origin, pokemonEntity, heldItems, failedDepositLocations, heldItemsByPokemon)
+            CobbleworkersInventoryUtils.handleDepositing(
+                world,
+                origin,
+                pokemonEntity,
+                heldItems,
+                failedDepositLocations,
+                heldItemsByPokemon
+            )
         }
     }
 
@@ -65,7 +80,10 @@ object CropHarvester : Worker {
 
         if (breakingPos != null) {
             val blockState = world.getBlockState(breakingPos)
-            if (!CobbleworkersCropUtils.isHarvestable(blockState) || !world.getBlockState(breakingPos).isOf(blockState.block)) {
+            if (
+                !CobbleworkersCropUtils.isHarvestable(blockState) ||
+                !world.getBlockState(breakingPos).isOf(blockState.block)
+            ) {
                 pokemonBreakingBlocks.remove(pokemonId)
                 CobbleworkersCropUtils.cancelBreaking(breakingPos, world)
                 CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
@@ -77,7 +95,13 @@ object CropHarvester : Worker {
                 return
             }
 
-            CobbleworkersCropUtils.harvestCrop(world, breakingPos, pokemonEntity, heldItemsByPokemon, config)
+            CobbleworkersCropUtils.harvestCrop(
+                world,
+                breakingPos,
+                pokemonEntity,
+                heldItemsByPokemon,
+                config
+            )
 
             if (heldItemsByPokemon.containsKey(pokemonId)) {
                 pokemonBreakingBlocks.remove(pokemonId)
@@ -89,9 +113,7 @@ object CropHarvester : Worker {
         val currentTarget = CobbleworkersNavigationUtils.getTarget(pokemonId, world)
 
         if (currentTarget == null) {
-
             val availableCrop = CobbleworkersCropUtils.findAvailableCrop(world, origin)
-
             if (availableCrop != null) {
                 CobbleworkersNavigationUtils.claimTarget(pokemonId, availableCrop, world)
             }
@@ -110,9 +132,18 @@ object CropHarvester : Worker {
                 pokemonBreakingBlocks[pokemonId] = currentTarget
             }
 
-            CobbleworkersCropUtils.harvestCrop(world, currentTarget, pokemonEntity, heldItemsByPokemon, config)
+            CobbleworkersCropUtils.harvestCrop(
+                world,
+                currentTarget,
+                pokemonEntity,
+                heldItemsByPokemon,
+                config
+            )
 
-            if (!CobbleworkersCropUtils.requiresBreaking(blockState.block) && heldItemsByPokemon.containsKey(pokemonId)) {
+            if (
+                !CobbleworkersCropUtils.requiresBreaking(blockState.block) &&
+                heldItemsByPokemon.containsKey(pokemonId)
+            ) {
                 CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
             }
         } else {
