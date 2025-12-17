@@ -87,12 +87,9 @@ object WorkerDispatcher {
             }
         }
 
-        if (isWorking) {
-            val currentPose = pokemonEntity.getDataTracker().get(PokemonEntity.POSE_TYPE)
-            if (currentPose == PoseType.SLEEP) {
-                // Force the pose to STAND to interrupt sleep
-                pokemonEntity.getDataTracker().set(PokemonEntity.POSE_TYPE, PoseType.STAND)
-            }
+        if (FuelGenerator.isPokemonTending(pokemonEntity.uuid)) {
+            pokemonEntity.wakeUp()
+            return
         }
     }
 }

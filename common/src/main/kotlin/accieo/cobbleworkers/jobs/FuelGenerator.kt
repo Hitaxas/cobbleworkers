@@ -35,6 +35,8 @@ object FuelGenerator : Worker {
     private val cooldownTicks get() = config.fuelGenerationCooldownSeconds * 20L
     private val lastGenerationTime = mutableMapOf<UUID, Long>()
     private val pokemonTendingFurnaces = mutableMapOf<UUID, BlockPos>() // Track which pokemon is tending which furnace
+    private const val TENDING_REFUEL_INTERVAL = 100L // every 5 seconds
+    private val lastRefuelTime = mutableMapOf<UUID, Long>()
     private val lastSoundTime = mutableMapOf<UUID, Long>() // Track last time fire sound was played
     private const val SOUND_INTERVAL = 30L // Play fire sound every 1.5 seconds
 
@@ -343,6 +345,7 @@ object FuelGenerator : Worker {
             if (!blockValidator(world, tendingPos) || !isCooking(world, tendingPos)) {
                 // Cooking done or furnace removed, release
                 pokemonTendingFurnaces.remove(pokemonId)
+                lastRefuelTime.remove(pokemonId)
                 lastSoundTime.remove(pokemonId)
                 CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
                 return
@@ -350,6 +353,13 @@ object FuelGenerator : Worker {
 
             // Stop any navigation and make pokemon stand still facing the furnace
             pokemonEntity.navigation.stop()
+
+            // Periodically refresh fuel
+            val lastRefuel = lastRefuelTime[pokemonId] ?: 0L
+            if (now - lastRefuel >= TENDING_REFUEL_INTERVAL) {
+                addBurnTime(world, tendingPos)
+                lastRefuelTime[pokemonId] = now
+            }
 
             // Make pokemon look at the furnace
             val furnaceCenter = tendingPos.toCenterPos()
