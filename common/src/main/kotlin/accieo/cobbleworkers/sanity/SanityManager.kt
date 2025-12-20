@@ -12,6 +12,7 @@ import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.server.network.ServerPlayerEntity
 import net.minecraft.server.world.ServerWorld
 import net.minecraft.entity.Entity
+import com.cobblemon.mod.common.entity.PoseType
 import net.minecraft.text.Text
 import net.minecraft.util.Formatting
 import net.minecraft.world.World
@@ -97,6 +98,9 @@ object SanityManager {
                 isRefusing[uuid] = false
                 isSleeping[uuid] = false
                 breakStartTime.remove(uuid)
+
+                clearSleepPose(pokemon)
+
                 sendActionBar(
                     pokemon,
                     "${pokemon.pokemon.getDisplayName().string} is ready to work again.",
@@ -107,10 +111,12 @@ object SanityManager {
 
             // Still on break - apply appropriate recovery
             if (isSleeping[uuid] == true) {
+                forceSleepPose(pokemon)
                 recoverWhileSleeping(pokemon)
             } else {
                 recoverWhileIdle(pokemon)
             }
+
 
             return false
         }
@@ -189,8 +195,11 @@ object SanityManager {
             isSleeping[uuid] = willSleep
 
             if (willSleep) {
+                isSleeping[uuid] = true
+                forceSleepPose(pokemon)
                 sendActionBar(pokemon, "$name is fast asleep!", Formatting.GOLD)
             } else {
+                isSleeping[uuid] = false
                 sendActionBar(pokemon, "$name is slacking off!", Formatting.RED)
             }
         }
@@ -221,6 +230,40 @@ object SanityManager {
         lastComplaintCheck.remove(uuid)
         hasComplainedDuringThisStretch.remove(uuid)
     }
+
+    private fun forceSleepPose(pokemon: PokemonEntity) {
+        try {
+            pokemon.navigation?.stop()
+
+            pokemon.velocity = pokemon.velocity.multiply(0.0, 1.0, 0.0)
+
+            pokemon.noClip = false
+            pokemon.setNoGravity(false)
+
+            pokemon.dataTracker.set(PokemonEntity.POSE_TYPE, PoseType.SLEEP)
+
+        } catch (e: Exception) {
+            try {
+                pokemon.setPose(net.minecraft.entity.EntityPose.SLEEPING)
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun clearSleepPose(pokemon: PokemonEntity) {
+        try {
+            // Reset to standing pose
+            pokemon.dataTracker.set(PokemonEntity.POSE_TYPE, PoseType.STAND)
+        } catch (_: Exception) {}
+
+        try {
+            pokemon.setPose(net.minecraft.entity.EntityPose.STANDING)
+        } catch (_: Exception) {}
+
+        pokemon.wakeUp()
+    }
+
+
+
 
     /**
      * Debug/admin command to set sanity.
