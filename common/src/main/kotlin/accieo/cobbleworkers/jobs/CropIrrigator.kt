@@ -143,4 +143,29 @@ object CropIrrigator : Worker {
         val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
         return config.cropIrrigators.any { it.lowercase() == speciesName }
     }
+
+
+    override fun isActivelyWorking(pokemonEntity: PokemonEntity): Boolean {
+        val uuid = pokemonEntity.pokemon.uuid
+        val world = pokemonEntity.world
+
+        // If currently assigned a farmland target → working
+        val target = CobbleworkersNavigationUtils.getTarget(uuid, world)
+        if (target != null) return true
+
+        // If refusing / on break → NOT working
+        if (accieo.cobbleworkers.sanity.SanityManager.isRefusingWork(pokemonEntity))
+            return false
+
+        // If sleeping → NOT working
+        if (accieo.cobbleworkers.sanity.SanityManager.isSleepingDuringBreak(pokemonEntity))
+            return false
+
+        // Otherwise:
+        // Pokémon is in "duty mode", allowed to work, can be scanning or roaming
+        // Count as working so sanity drains
+        return true
+    }
+
+  
 }

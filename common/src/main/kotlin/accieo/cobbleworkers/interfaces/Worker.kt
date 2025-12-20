@@ -38,4 +38,6 @@ interface Worker {
 
     fun interrupt(pokemonEntity: PokemonEntity, world: World) {
     }
+
+    fun isActivelyWorking(pokemon: PokemonEntity): Boolean = false
 }

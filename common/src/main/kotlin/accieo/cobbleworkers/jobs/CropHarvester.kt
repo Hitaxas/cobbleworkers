@@ -159,4 +159,35 @@ object CropHarvester : Worker {
         val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
         return config.cropHarvesters.any { it.lowercase() == speciesName }
     }
+
+
+    override fun isActivelyWorking(pokemonEntity: PokemonEntity): Boolean {
+        val uuid = pokemonEntity.pokemon.uuid
+        val world = pokemonEntity.world
+
+        // If currently breaking a crop → working
+        if (pokemonBreakingBlocks.containsKey(uuid)) return true
+
+        // If holding harvested items → still working (depositing phase)
+        if (heldItemsByPokemon[uuid]?.isNotEmpty() == true) return true
+
+        // If Pokémon currently has a navigation target → actively harvesting
+        val target = CobbleworkersNavigationUtils.getTarget(uuid, world)
+        if (target != null) return true
+
+        // If refusing / on break → NOT working
+        if (accieo.cobbleworkers.sanity.SanityManager.isRefusingWork(pokemonEntity))
+            return false
+
+        // If sleeping during break → NOT working
+        if (accieo.cobbleworkers.sanity.SanityManager.isSleepingDuringBreak(pokemonEntity))
+            return false
+
+        // Otherwise:
+        // Pokémon is “on duty” (able to harvest, may be scanning / idle waiting)
+        // Count as working so sanity drains
+        return true
+    }
+
+  
 }

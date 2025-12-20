@@ -88,7 +88,7 @@ class CobbleworkersConfig : ConfigData {
         @ConfigEntry.BoundedDiscrete(min = 10, max = 30)
         var blocksScannedPerTick = 15
         @ConfigEntry.BoundedDiscrete(min = 1, max = 10)
-        var searchRadius = 8
+        var searchRadius = 16
         @ConfigEntry.BoundedDiscrete(min = 1, max = 8)
         var searchHeight = 5
     }

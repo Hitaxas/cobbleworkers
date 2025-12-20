@@ -452,4 +452,9 @@ object FuelGenerator : Worker {
         val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
         return config.fuelGenerators.any { it.lowercase() == speciesName }
     }
+
+    override fun isActivelyWorking(pokemonEntity: PokemonEntity): Boolean {
+        val uuid = pokemonEntity.pokemon.uuid
+        return pokemonTendingFurnaces.containsKey(uuid)
+    }
 }

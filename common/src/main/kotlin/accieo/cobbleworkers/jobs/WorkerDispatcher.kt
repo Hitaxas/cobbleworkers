@@ -12,10 +12,12 @@ import accieo.cobbleworkers.enums.JobType
 import accieo.cobbleworkers.interfaces.Worker
 import accieo.cobbleworkers.utilities.DeferredBlockScanner
 import accieo.cobbleworkers.sanity.SanityManager
+import accieo.cobbleworkers.sanity.SanityHudSyncServer
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
 import java.util.UUID
+import net.minecraft.server.network.ServerPlayerEntity
 
 object WorkerDispatcher {
 
@@ -72,14 +74,29 @@ object WorkerDispatcher {
      */
     fun tickPokemon(world: World, pastureOrigin: BlockPos, pokemonEntity: PokemonEntity) {
 
+        val owner = pokemonEntity.owner
+        if (owner is ServerPlayerEntity) {
+            SanityHudSyncServer.tick(owner)
+        }
+
+        // ===== REFUSAL STATE (Below 50% sanity) =====
         if (SanityManager.isRefusingWork(pokemonEntity)) {
+            // Pokemon is on break - just recover sanity
             handleRecovery(pokemonEntity)
 
+            if (pokemonEntity.owner is ServerPlayerEntity) {
+                SanityHudSyncServer.sendUpdate(pokemonEntity.owner as ServerPlayerEntity)
+            }
+
+            // Check if ready to work again (handled internally by SanityManager.canWork)
             if (SanityManager.canWork(pokemonEntity, world)) {
+                // canWork() already sent the "ready to work" message
             }
             return
         }
 
+        // ===== FORCED BREAK CHECK =====
+        // If sanity just dropped below threshold, interrupt current work and begin refusal
         if (SanityManager.needsForcedBreak(pokemonEntity)) {
             workers.forEach { it.interrupt(pokemonEntity, world) }
             pokemonEntity.navigation.stop()
@@ -87,26 +104,40 @@ object WorkerDispatcher {
             return
         }
 
-        var didWork = false
+        // ===== RANDOM SLACK-OFF CHECK (50-30% sanity) =====
+        // RNG chance to slack off this tick instead of working
+        if (SanityManager.shouldSlackOff(pokemonEntity)) {
+            handleRecovery(pokemonEntity)
+            return
+        }
 
+// ===== WORK PHASE =====
         workers
             .filter { it.shouldRun(pokemonEntity) }
             .forEach { worker ->
                 worker.tick(world, pastureOrigin, pokemonEntity)
-                didWork = true
             }
 
+// ===== SANITY MANAGEMENT =====
+        val activelyWorking = workers.any { it.isActivelyWorking(pokemonEntity) }
 
-        if (didWork) {
+        if (activelyWorking) {
             SanityManager.drainWhileWorking(pokemonEntity)
-            SanityManager.shouldComplain(pokemonEntity, world)
+
+            if (SanityManager.shouldComplain(pokemonEntity, world)) {
+                // optional effects here
+            }
         } else {
             handleRecovery(pokemonEntity)
         }
     }
 
+    /**
+     * Handles sanity recovery based on Pokemon's current state.
+     * Sleeping recovers 3.5x faster than idle.
+     */
     private fun handleRecovery(pokemonEntity: PokemonEntity) {
-        // Accessing POSE_TYPE correctly for Cobblemon
+        // Check if Pokemon is sleeping
         val currentPose = pokemonEntity.dataTracker.get(PokemonEntity.POSE_TYPE)
 
         if (currentPose == com.cobblemon.mod.common.entity.PoseType.SLEEP) {
@@ -116,12 +147,17 @@ object WorkerDispatcher {
         }
     }
 
+    /**
+     * Forces Pokemon to wake up if they're actively working.
+     * Used to prevent sleeping during critical work tasks.
+     */
     fun forceAwakeIfWorking(pokemonEntity: PokemonEntity) {
         val pokemonUuid: UUID = pokemonEntity.pokemon.uuid
 
         val isWorking = workers.any { worker ->
             when (worker) {
                 is FuelGenerator -> worker.isPokemonTending(pokemonUuid)
+                // Add other workers that require Pokemon to stay awake
                 else -> false
             }
         }
@@ -129,5 +165,21 @@ object WorkerDispatcher {
         if (isWorking) {
             pokemonEntity.wakeUp()
         }
+    }
+
+    /**
+     * Gets the current sanity percentage for a Pokemon.
+     * Useful for UI display or debugging.
+     */
+    fun getSanityPercent(pokemonEntity: PokemonEntity): Int {
+        return SanityManager.getSanityPercent(pokemonEntity)
+    }
+
+    /**
+     * Gets a readable status string for a Pokemon.
+     * Useful for debugging or UI tooltips.
+     */
+    fun getStatus(pokemonEntity: PokemonEntity): String {
+        return SanityManager.getStatus(pokemonEntity)
     }
 }
