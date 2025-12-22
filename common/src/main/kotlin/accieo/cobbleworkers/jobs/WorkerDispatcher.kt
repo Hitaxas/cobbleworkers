@@ -158,6 +158,10 @@ object WorkerDispatcher {
         }
     }
 
+    fun forceImmediateScan(world: World, origin: BlockPos) {
+        DeferredBlockScanner.tickPastureAreaScan(world, origin, jobValidators, true)
+    }
+
     /**
      * Gets the current sanity percentage for a Pokemon.
      * Useful for UI display or debugging.
@@ -173,4 +177,15 @@ object WorkerDispatcher {
     fun getStatus(pokemonEntity: PokemonEntity): String {
         return SanityManager.getStatus(pokemonEntity)
     }
+
+    fun releasePokemonFromJobs(pokemon: PokemonEntity) {
+        workers.forEach { worker ->
+            try {
+                worker.interrupt(pokemon, pokemon.world)
+            } catch (_: Exception) {}
+        }
+    }
+
+
+    fun forceValidators() = jobValidators
 }

@@ -277,11 +277,7 @@ object FuelGenerator : Worker {
         val headHeight = try {
             pokemonEntity.getEyeY() - pokemonEntity.y
         } catch (e: Exception) {
-            try {
-                pokemonEntity.standingEyeHeight.toDouble()
-            } catch (e2: Exception) {
-                pokemonEntity.height * 0.8
-            }
+            pokemonEntity.standingEyeHeight.toDouble()
         }
 
         val startX = pokemonEntity.x
@@ -289,64 +285,49 @@ object FuelGenerator : Worker {
         val startZ = pokemonEntity.z
 
         val furnaceCenter = furnacePos.toCenterPos()
-        val endX = furnaceCenter.x
-        val endY = furnaceCenter.y - 0.75
-        val endZ = furnaceCenter.z
+        val dx = furnaceCenter.x - startX
+        val dy = (furnaceCenter.y - 0.5) - startY
+        val dz = furnaceCenter.z - startZ
 
-        val dx = endX - startX
-        val dy = endY - startY
-        val dz = endZ - startZ
         val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
 
-        val steps = (distance / 0.15).toInt()
-        for (i in 0..steps) {
-            val progress = i.toDouble() / steps
-            val x = startX + dx * progress
-            val y = startY + dy * progress
-            val z = startZ + dz * progress
+        val dirX = dx / distance
+        val dirY = dy / distance
+        val dirZ = dz / distance
 
-            val offsetX = (Math.random() - 0.5) * 0.05
-            val offsetY = (Math.random() - 0.5) * 0.05
-            val offsetZ = (Math.random() - 0.5) * 0.05
+        repeat(8) {
+
+            val spread = 0.15 // Higher = wider cone
+            val vX = dirX + (world.random.nextDouble() - 0.5) * spread
+            val vY = dirY + (world.random.nextDouble() - 0.5) * spread
+            val vZ = dirZ + (world.random.nextDouble() - 0.5) * spread
+
+            val speedBase = 0.35
+            val speedVar = world.random.nextDouble() * 0.2
+            val finalSpeed = speedBase + speedVar
 
             world.spawnParticles(
                 net.minecraft.particle.ParticleTypes.FLAME,
-                x + offsetX,
-                y + offsetY,
-                z + offsetZ,
-                1,
-                0.0,
-                0.0,
-                0.0,
-                0.005
+                startX,
+                startY,
+                startZ,
+                0,
+                vX,
+                vY,
+                vZ,
+                finalSpeed
             )
-
-            if (i % 4 == 0) {
-                world.spawnParticles(
-                    net.minecraft.particle.ParticleTypes.SMOKE,
-                    x + offsetX,
-                    y + offsetY,
-                    z + offsetZ,
-                    1,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.005
-                )
-            }
         }
 
-        world.spawnParticles(
-            net.minecraft.particle.ParticleTypes.FLAME,
-            endX,
-            endY,
-            endZ,
-            2,
-            0.05,
-            0.05,
-            0.05,
-            0.01
-        )
+        if (world.random.nextFloat() < 0.4f) {
+            world.spawnParticles(
+                net.minecraft.particle.ParticleTypes.SMOKE,
+                startX, startY, startZ,
+                0,
+                dirX * 0.2, dirY * 0.2, dirZ * 0.2,
+                0.5
+            )
+        }
     }
 
     private fun positionPokemonAtFurnace(world: World, furnacePos: BlockPos, pokemonEntity: PokemonEntity) {
@@ -467,6 +448,12 @@ object FuelGenerator : Worker {
         }
 
         return true
+    }
+
+    override fun interrupt(pokemonEntity: PokemonEntity, world: World) {
+        try {
+            interruptWork(pokemonEntity, world)
+        } catch (_: Exception) {}
     }
 
 

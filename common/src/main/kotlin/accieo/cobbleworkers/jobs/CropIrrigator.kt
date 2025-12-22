@@ -16,122 +16,127 @@ import accieo.cobbleworkers.utilities.CobbleworkersTypeUtils
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.block.Block
 import net.minecraft.block.FarmlandBlock
+import net.minecraft.particle.ParticleTypes
+import net.minecraft.server.world.ServerWorld
 import net.minecraft.util.math.BlockPos
+import net.minecraft.util.math.Vec3d
 import net.minecraft.world.World
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.cos
+import kotlin.math.sin
 
-/**
- * A worker job for a Pokémon to find, navigate to, and irrigate dry farmland.
- * Improved to target any available dry farmland in range to prevent "clustering."
- */
 object CropIrrigator : Worker {
 
     private val config = CobbleworkersConfigHolder.config.irrigation
+    override val jobType = JobType.CropIrrigator
 
-    override val jobType: JobType = JobType.CropIrrigator
+    private data class IrrigationState(
+        var startTime: Long = 0,
+        var isIrrigating: Boolean = false,
+        var angle: Float = -40f,
+        var sweepDir: Int = 1
+    )
 
-    /**
-     * Valid farmland = any block with a MOISTURE property
-     */
-    override val blockValidator: ((World, BlockPos) -> Boolean) = { world, pos ->
+    private val states = ConcurrentHashMap<UUID, IrrigationState>()
+
+    override val blockValidator = { world: World, pos: BlockPos ->
         world.getBlockState(pos).contains(FarmlandBlock.MOISTURE)
     }
 
-    override fun shouldRun(pokemonEntity: PokemonEntity): Boolean {
+    override fun shouldRun(pokemon: PokemonEntity): Boolean {
         if (!config.cropIrrigatorsEnabled) return false
-
-        return CobbleworkersTypeUtils.isAllowedByType(
-            config.typeIrrigatesCrops,
-            pokemonEntity
-        ) || isDesignatedIrrigator(pokemonEntity)
-    }
-
-    override fun tick(world: World, origin: BlockPos, pokemonEntity: PokemonEntity) {
-        val pokemonId = pokemonEntity.pokemon.uuid
-        val currentTarget = CobbleworkersNavigationUtils.getTarget(pokemonId, world)
-
-        // Find a new target if we don't have one or if current target is already hydrated
-        if (currentTarget == null || isHydrated(world, currentTarget)) {
-            if (currentTarget != null) CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
-
-            val newTarget = findAvailableDryFarmland(world, origin)
-            if (newTarget != null) {
-                CobbleworkersNavigationUtils.claimTarget(pokemonId, newTarget, world)
-            }
-            return
-        }
-
-        // Navigate to the specific dry block
-        if (!CobbleworkersNavigationUtils.isPokemonAtPosition(pokemonEntity, currentTarget, 1.5)) {
-            CobbleworkersNavigationUtils.navigateTo(pokemonEntity, currentTarget)
-            return
-        }
-
-        // Irrigate the target and surrounding blocks in a burst
-        irrigateFarmland(
-            world,
-            currentTarget,
-            config.irrigationRadius.coerceAtLeast(2)
-        )
-
-        // Finish task and release target
-        CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
-    }
-
-    /**
-     * Scans for dry farmland within the worker's radius that isn't already targeted.
-     */
-    private fun findAvailableDryFarmland(world: World, origin: BlockPos): BlockPos? {
-        val radius = 16 // Horizontal search range
-        val dryBlocks = mutableListOf<BlockPos>()
-
-        // Scan area for blocks that need water
-        BlockPos.iterate(
-            origin.add(-radius, -2, -radius),
-            origin.add(radius, 2, radius)
-        ).forEach { pos ->
-            val state = world.getBlockState(pos)
-            if (state.contains(FarmlandBlock.MOISTURE)) {
-                if (state.get(FarmlandBlock.MOISTURE) < FarmlandBlock.MAX_MOISTURE) {
-                    // Only consider it if no one else is heading there
-                    if (!CobbleworkersNavigationUtils.isTargeted(pos, world) &&
-                        !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
-                    ) {
-                        dryBlocks.add(pos.toImmutable())
-                    }
+        return CobbleworkersTypeUtils.isAllowedByType(config.typeIrrigatesCrops, pokemon) ||
+                config.cropIrrigators.any {
+                    it.equals(pokemon.pokemon.species.translatedName.string, true)
                 }
+    }
+
+    override fun tick(world: World, origin: BlockPos, pokemon: PokemonEntity) {
+        val id = pokemon.pokemon.uuid
+        val state = states.computeIfAbsent(id) { IrrigationState() }
+
+        val target = CobbleworkersNavigationUtils.getTarget(id, world)
+
+        // Need a target?
+        if (target == null || isHydrated(world, target)) {
+            state.isIrrigating = false
+            CobbleworkersNavigationUtils.releaseTarget(id, world)
+
+            findDryFarmland(world, origin)?.let {
+                CobbleworkersNavigationUtils.claimTarget(id, it, world)
             }
+            return
         }
 
-        // Return the closest dry block from the list of available ones
-        return dryBlocks.minByOrNull { it.getSquaredDistance(origin) }
+        // Move to target
+        if (!CobbleworkersNavigationUtils.isPokemonAtPosition(pokemon, target, 1.5)) {
+            state.isIrrigating = false
+            CobbleworkersNavigationUtils.navigateTo(pokemon, target)
+            return
+        }
+
+        // Start irrigation
+        if (!state.isIrrigating) {
+            state.isIrrigating = true
+            state.startTime = world.time
+            state.angle = -40f
+            state.sweepDir = 1
+            pokemon.navigation.stop()
+            pokemon.setVelocity(0.0, 0.0, 0.0)
+        }
+
+        val elapsed = world.time - state.startTime
+
+        // lock Pokémon in place
+        pokemon.velocity = Vec3d.ZERO
+        pokemon.navigation.stop()
+
+        // Smooth slow sprinkler sweep
+        val sweepAmplitude = 55f          // how wide the arc is
+        val sweepPeriod = 120f            // higher = slower movement (~6s per full cycle)
+
+        val t = (world.time - state.startTime).toFloat()
+        state.angle = (sin(t / sweepPeriod) * sweepAmplitude)
+
+
+        val yaw = state.angle + pokemon.bodyYaw
+
+        pokemon.headYaw = yaw
+        pokemon.bodyYaw = pokemon.bodyYaw
+        pokemon.yaw = pokemon.bodyYaw
+        pokemon.pitch = -20f
+
+
+        if (world is ServerWorld) {
+            spawnWaterBeam(world, pokemon)
+        }
+
+        if (elapsed % 6L == 0L) {
+            hydrateRingGradually(
+                world,
+                target,
+                (elapsed / 20).toInt().coerceAtMost(config.irrigationRadius)
+            )
+        }
+
+        if (elapsed > 120) {
+            irrigateFarmland(world, target, config.irrigationRadius)
+            states.remove(id)
+            CobbleworkersNavigationUtils.releaseTarget(id, world)
+            pokemon.pitch = 0f
+        }
     }
 
-    /**
-     * Helper to check if a specific block is already fully moisturized
-     */
-    private fun isHydrated(world: World, pos: BlockPos): Boolean {
-        val state = world.getBlockState(pos)
-        return if (state.contains(FarmlandBlock.MOISTURE)) {
-            state.get(FarmlandBlock.MOISTURE) >= FarmlandBlock.MAX_MOISTURE
-        } else true
-    }
-
-    /**
-     * Irrigates all farmland-like blocks in radius
-     */
-    private fun irrigateFarmland(world: World, blockPos: BlockPos, radius: Int) {
-        BlockPos.iterate(
-            blockPos.add(-radius, 0, -radius),
-            blockPos.add(radius, 0, radius)
-        ).forEach { pos ->
-            val state = world.getBlockState(pos)
-
-            if (state.contains(FarmlandBlock.MOISTURE)) {
-                val moisture = state.get(FarmlandBlock.MOISTURE)
-                if (moisture < FarmlandBlock.MAX_MOISTURE) {
+    private fun hydrateRingGradually(world: World, center: BlockPos, radius: Int) {
+        BlockPos.iterate(center.add(-radius, 0, -radius), center.add(radius, 0, radius)).forEach { pos ->
+            val s = world.getBlockState(pos)
+            if (s.contains(FarmlandBlock.MOISTURE)) {
+                val m = s.get(FarmlandBlock.MOISTURE)
+                if (m < FarmlandBlock.MAX_MOISTURE) {
                     world.setBlockState(
                         pos,
-                        state.with(FarmlandBlock.MOISTURE, FarmlandBlock.MAX_MOISTURE),
+                        s.with(FarmlandBlock.MOISTURE, (m + 1).coerceAtMost(7)),
                         Block.NOTIFY_LISTENERS
                     )
                 }
@@ -139,33 +144,93 @@ object CropIrrigator : Worker {
         }
     }
 
-    private fun isDesignatedIrrigator(pokemonEntity: PokemonEntity): Boolean {
-        val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
-        return config.cropIrrigators.any { it.lowercase() == speciesName }
+    private fun spawnWaterBeam(world: ServerWorld, pokemon: PokemonEntity) {
+        val head = pokemon.pos.add(0.0, pokemon.height * 0.85, 0.0)
+
+        val yaw = Math.toRadians(pokemon.headYaw.toDouble())
+        val pitch = Math.toRadians(10.0)
+
+        val dx = -sin(yaw) * cos(pitch)
+        val dy = -sin(pitch)
+        val dz = cos(yaw) * cos(pitch)
+
+        val length = 10
+        for (i in 0..length) {
+            val d = i * 0.30
+            val x = head.x + dx * d
+            val y = head.y + dy * d
+            val z = head.z + dz * d
+
+            world.spawnParticles(
+                ParticleTypes.FALLING_WATER,
+                x, y, z,
+                1,
+                0.02, 0.02, 0.02,
+                0.01
+            )
+
+            if (i % 3 == 0) {
+                world.spawnParticles(
+                    ParticleTypes.BUBBLE,
+                    x, y, z,
+                    1,
+                    0.01, 0.01, 0.01,
+                    0.05
+                )
+            }
+
+            if (i == length) {
+                world.spawnParticles(
+                    ParticleTypes.SPLASH,
+                    x, y, z,
+                    10,
+                    0.3, 0.1, 0.3,
+                    0.12
+                )
+            }
+        }
     }
 
 
-    override fun isActivelyWorking(pokemonEntity: PokemonEntity): Boolean {
-        val uuid = pokemonEntity.pokemon.uuid
-        val world = pokemonEntity.world
-
-        // If currently assigned a farmland target → working
-        val target = CobbleworkersNavigationUtils.getTarget(uuid, world)
-        if (target != null) return true
-
-        // If refusing / on break → NOT working
-        if (accieo.cobbleworkers.sanity.SanityManager.isRefusingWork(pokemonEntity))
-            return false
-
-        // If sleeping → NOT working
-        if (accieo.cobbleworkers.sanity.SanityManager.isSleepingDuringBreak(pokemonEntity))
-            return false
-
-        // Otherwise:
-        // Pokémon is in "duty mode", allowed to work, can be scanning or roaming
-        // Count as working so sanity drains
-        return true
+    private fun irrigateFarmland(world: World, center: BlockPos, radius: Int) {
+        BlockPos.iterate(center.add(-radius, 0, -radius), center.add(radius, 0, radius)).forEach { pos ->
+            val s = world.getBlockState(pos)
+            if (s.contains(FarmlandBlock.MOISTURE)) {
+                if (s.get(FarmlandBlock.MOISTURE) < FarmlandBlock.MAX_MOISTURE) {
+                    world.setBlockState(
+                        pos,
+                        s.with(FarmlandBlock.MOISTURE, FarmlandBlock.MAX_MOISTURE),
+                        Block.NOTIFY_LISTENERS
+                    )
+                }
+            }
+        }
     }
 
-  
+    private fun findDryFarmland(world: World, origin: BlockPos): BlockPos? {
+        val r = 16
+        return BlockPos.iterate(origin.add(-r, -2, -r), origin.add(r, 2, r))
+            .firstOrNull { pos ->
+                val s = world.getBlockState(pos)
+                s.contains(FarmlandBlock.MOISTURE)
+                        && s.get(FarmlandBlock.MOISTURE) < FarmlandBlock.MAX_MOISTURE
+                        && !CobbleworkersNavigationUtils.isTargeted(pos, world)
+            }?.toImmutable()
+    }
+
+    private fun isHydrated(world: World, pos: BlockPos): Boolean {
+        val s = world.getBlockState(pos)
+        return !s.contains(FarmlandBlock.MOISTURE)
+                || s.get(FarmlandBlock.MOISTURE) >= FarmlandBlock.MAX_MOISTURE
+    }
+
+    override fun isActivelyWorking(pokemon: PokemonEntity): Boolean {
+        return states[pokemon.pokemon.uuid]?.isIrrigating == true ||
+                CobbleworkersNavigationUtils.getTarget(pokemon.pokemon.uuid, pokemon.world) != null
+    }
+
+    override fun interrupt(pokemon: PokemonEntity, world: World) {
+        states.remove(pokemon.pokemon.uuid)
+        CobbleworkersNavigationUtils.releaseTarget(pokemon.pokemon.uuid, world)
+    }
 }

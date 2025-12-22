@@ -9,10 +9,16 @@
 package accieo.cobbleworkers.party
 
 import accieo.cobbleworkers.jobs.WorkerDispatcher
+import accieo.cobbleworkers.cache.CobbleworkersCacheManager
+import accieo.cobbleworkers.config.CobbleworkersConfigHolder
+import accieo.cobbleworkers.enums.JobType
+import accieo.cobbleworkers.utilities.CobbleworkersInventoryUtils
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.util.math.BlockPos
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import net.minecraft.world.World
+import net.minecraft.util.math.Box
 
 object PartyWorkerCore {
 
@@ -21,21 +27,27 @@ object PartyWorkerCore {
 
     fun markActive(pokemon: PokemonEntity) {
         val uuid = pokemon.pokemon.uuid
-        val name = pokemon.pokemon.getDisplayName().string
         activePartyPokemon.add(uuid)
 
         val origin = BlockPos.ofFloored(pokemon.x, pokemon.y, pokemon.z)
         pokemonWorkOrigin.putIfAbsent(uuid, origin)
 
+        // 🚀 Instant world awareness
+        if (!pokemon.world.isClient) {
+            forceImmediateScan(pokemon.world, origin)
+        }
     }
 
     fun markInactive(pokemon: PokemonEntity) {
         val uuid = pokemon.pokemon.uuid
-        val name = pokemon.pokemon.getDisplayName().string
+
         activePartyPokemon.remove(uuid)
         pokemonWorkOrigin.remove(uuid)
 
+        // 🚨 NEW: force release from any job
+        WorkerDispatcher.releasePokemonFromJobs(pokemon)
     }
+
 
     fun tickPokemon(pokemon: PokemonEntity) {
         val uuid = pokemon.pokemon.uuid
@@ -53,10 +65,6 @@ object PartyWorkerCore {
         val workOrigin = pokemonWorkOrigin[uuid]
             ?: BlockPos.ofFloored(pokemon.x, pokemon.y, pokemon.z)
 
-
-        // Party workers scan their own area
-        WorkerDispatcher.tickAreaScan(world, workOrigin)
-
         // Then tick the pokemon's work logic
         WorkerDispatcher.tickPokemon(world, workOrigin, pokemon)
     }
@@ -73,8 +81,35 @@ object PartyWorkerCore {
         return activePartyPokemon.toSet()
     }
 
+    private fun forceImmediateScan(world: World, origin: BlockPos) {
+        CobbleworkersCacheManager.removeTargets(origin)
+
+        val radius = CobbleworkersConfigHolder.config.general.searchRadius.toDouble()
+        val height = CobbleworkersConfigHolder.config.general.searchHeight.toDouble()
+
+        val box = Box(origin).expand(radius, height, radius)
+
+        BlockPos.stream(box).forEach { pos ->
+            val bp = pos.toImmutable()
+
+            val isInventory = CobbleworkersInventoryUtils.blockValidator(world, bp)
+            if (isInventory) {
+                CobbleworkersCacheManager.addTarget(origin, JobType.Generic, bp)
+            }
+
+            WorkerDispatcher.forceValidators().forEach { (jobType, validator) ->
+                if (validator(world, bp)) {
+                    CobbleworkersCacheManager.addTarget(origin, jobType, bp)
+                }
+            }
+        }
+    }
+
+
+
     fun clearAll() {
         activePartyPokemon.clear()
         pokemonWorkOrigin.clear()
     }
+
 }

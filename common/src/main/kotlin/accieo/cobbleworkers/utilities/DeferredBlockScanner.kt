@@ -36,14 +36,17 @@ object DeferredBlockScanner {
     fun tickPastureAreaScan(
         world: World,
         pastureOrigin: BlockPos,
-        jobValidators: Map<JobType, (World, BlockPos) -> Boolean>
+        jobValidators: Map<JobType, (World, BlockPos) -> Boolean>,
+        forceImmediate: Boolean = false
     ) {
         val currentTick = world.time
 
         clearExpiredCompletions(currentTick)
 
-        lastScanCompletion[pastureOrigin]?.let { lastTick ->
-            if (currentTick - lastTick < SCAN_COOLDOWN_TICKS) return
+        if (!forceImmediate) {
+            lastScanCompletion[pastureOrigin]?.let { lastTick ->
+                if (currentTick - lastTick < SCAN_COOLDOWN_TICKS) return
+            }
         }
 
         val scanJob = activeScans.getOrPut(pastureOrigin) {
@@ -52,13 +55,16 @@ object DeferredBlockScanner {
             val radius = searchRadius.toDouble()
             val height = searchHeight.toDouble()
             val searchArea = Box(pastureOrigin).expand(radius, height, radius)
+
             ScanJob(BlockPos.stream(searchArea).iterator(), currentTick - 1)
         }
 
         if (scanJob.lastTickProcessed == currentTick) return
         scanJob.lastTickProcessed = currentTick
 
-        repeat(BLOCKS_PER_TICK) {
+        val perTick = if (forceImmediate) BLOCKS_PER_TICK * 40 else BLOCKS_PER_TICK
+
+        repeat(perTick) {
             if (!scanJob.iterator.hasNext()) {
                 activeScans.remove(pastureOrigin)
                 lastScanCompletion[pastureOrigin] = currentTick
@@ -67,8 +73,7 @@ object DeferredBlockScanner {
 
             val pos = scanJob.iterator.next()
 
-            val isValidInventory = CobbleworkersInventoryUtils.blockValidator(world, pos)
-            if (isValidInventory) {
+            if (CobbleworkersInventoryUtils.blockValidator(world, pos)) {
                 CobbleworkersCacheManager.addTarget(pastureOrigin, JobType.Generic, pos.toImmutable())
             }
 
@@ -79,6 +84,7 @@ object DeferredBlockScanner {
             }
         }
     }
+
 
     /**
      * Checks whether a scan job is running for the given pasture origin.
