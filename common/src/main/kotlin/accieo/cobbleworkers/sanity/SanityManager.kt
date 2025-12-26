@@ -9,10 +9,8 @@
 package accieo.cobbleworkers.sanity
 
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
-import net.minecraft.server.network.ServerPlayerEntity
-import net.minecraft.server.world.ServerWorld
-import net.minecraft.entity.Entity
 import com.cobblemon.mod.common.entity.PoseType
+import net.minecraft.server.network.ServerPlayerEntity
 import net.minecraft.text.Text
 import net.minecraft.util.Formatting
 import net.minecraft.world.World
@@ -27,25 +25,22 @@ object SanityManager {
     /* ----------------------------- CONFIG ----------------------------- */
 
     const val MAX_SANITY = 100.0
-    const val COMPLAINING_THRESHOLD = 50.0 // Below this: RNG chance to slack off
+    const val COMPLAINING_THRESHOLD = 50.0
     const val REFUSE_THRESHOLD = 50.0
     const val RESUME_THRESHOLD = 60.0
+
     private val sleepYaw: MutableMap<UUID, Float> = ConcurrentHashMap()
 
-    // for some reason, values lower than 0.1 seem to not update/allow the HUD to show...
-    private const val WORK_DRAIN_PER_TICK =  0.0052 // 0.000625 // around 0.0125/second
-    private const val REST_RECOVERY_PER_TICK = 0.025 // around 0.5/second
-    private const val SLEEP_RECOVERY_MULTIPLIER = 3.5 // 3.5x faster when sleeping
-    private const val MIN_BREAK_DURATION_TICKS = 20L * 60L // 1 minute minimum
+    private const val WORK_DRAIN_PER_TICK = 0.0104
+    private const val REST_RECOVERY_PER_TICK = 0.025
+    private const val SLEEP_RECOVERY_MULTIPLIER = 3.5
+    private const val MIN_BREAK_DURATION_TICKS = 20L * 60L
 
-    // RNG chances for slacking behavior (50-30% sanity range)
-    private const val SLACK_CHANCE_AT_50 = 0.01 // 1% chance per tick at 50%
-    private const val SLACK_CHANCE_AT_30 = 1.00 // 100% chance per tick at 30%
+    private const val SLACK_CHANCE_AT_50 = 0.25
+    private const val SLACK_CHANCE_AT_30 = 1.00
+    private const val SLEEP_CHANCE = 0.50
 
-    // Sleep chance when refusing work (below 50% sanity)
-    private const val SLEEP_CHANCE = 0.50 // 50% chance to sleep instead of wandering
-
-    private const val COMPLAINT_CHECK_INTERVAL = 20L * 5L // Check every 5 seconds
+    private const val COMPLAINT_CHECK_INTERVAL = 20L * 5L
 
     /* ------------------------------ STATE ------------------------------ */
 
@@ -56,32 +51,55 @@ object SanityManager {
     private val lastComplaintCheck: MutableMap<UUID, Long> = ConcurrentHashMap()
     private val hasComplainedDuringThisStretch: MutableMap<UUID, Boolean> = ConcurrentHashMap()
 
+
+    /* ===================================================================
+       TRUE PERSISTENT STORAGE
+       =================================================================== */
+
     fun getSanity(pokemon: PokemonEntity): Double {
-        return sanity.computeIfAbsent(pokemon.pokemon.uuid) { MAX_SANITY }
+        val uuid = pokemon.pokemon.uuid
+
+        return sanity.computeIfAbsent(uuid) {
+            val tag = pokemon.pokemon.persistentData
+            if (tag.contains("cobbleworkers_sanity")) {
+                tag.getDouble("cobbleworkers_sanity")
+                    .coerceIn(0.0, MAX_SANITY)
+            } else {
+                MAX_SANITY
+            }
+        }
     }
+
+    private fun persistSanity(pokemon: PokemonEntity, value: Double) {
+        val clamped = value.coerceIn(0.0, MAX_SANITY)
+        sanity[pokemon.pokemon.uuid] = clamped
+
+        try {
+            pokemon.pokemon.persistentData.putDouble("cobbleworkers_sanity", clamped)
+        } catch (_: Exception) {}
+    }
+
+    /* ===================================================================
+       LOGIC
+       =================================================================== */
 
     fun isComplaining(pokemon: PokemonEntity): Boolean {
         val currentSanity = getSanity(pokemon)
         return currentSanity < COMPLAINING_THRESHOLD && currentSanity >= REFUSE_THRESHOLD
     }
 
-    /**
-     * RNG-based check if Pokemon should slack off this tick.
-     * Chance increases as sanity drops from 50% to 30%.
-     */
     fun shouldSlackOff(pokemon: PokemonEntity): Boolean {
         val currentSanity = getSanity(pokemon)
 
-        // Only roll when in complaining range (50-30%)
-        if (currentSanity >= COMPLAINING_THRESHOLD || currentSanity < REFUSE_THRESHOLD) {
+        if (currentSanity >= COMPLAINING_THRESHOLD || currentSanity < REFUSE_THRESHOLD)
             return false
-        }
 
-        // Linear interpolation between 5% at 50% sanity and 20% at 30% sanity
-        val sanityRange = COMPLAINING_THRESHOLD - REFUSE_THRESHOLD // 20
-        val currentPosition = currentSanity - REFUSE_THRESHOLD // 0-20
-        val t = currentPosition / sanityRange // 0.0-1.0
-        val slackChance = SLACK_CHANCE_AT_30 + (SLACK_CHANCE_AT_50 - SLACK_CHANCE_AT_30) * t
+        val sanityRange = COMPLAINING_THRESHOLD - REFUSE_THRESHOLD
+        val currentPosition = currentSanity - REFUSE_THRESHOLD
+        val t = currentPosition / sanityRange
+
+        val slackChance =
+            SLACK_CHANCE_AT_30 + (SLACK_CHANCE_AT_50 - SLACK_CHANCE_AT_30) * t
 
         return Random.nextDouble() < slackChance
     }
@@ -90,11 +108,9 @@ object SanityManager {
         val uuid = pokemon.pokemon.uuid
         val currentSanity = getSanity(pokemon)
 
-        // Check if on break
         if (isRefusing[uuid] == true) {
             val breakStart = breakStartTime[uuid] ?: return false
 
-            // Can resume if: minimum break time passed AND sanity recovered
             if (world.time - breakStart >= MIN_BREAK_DURATION_TICKS && currentSanity >= RESUME_THRESHOLD) {
                 isRefusing[uuid] = false
                 isSleeping[uuid] = false
@@ -110,7 +126,6 @@ object SanityManager {
                 return true
             }
 
-            // Still on break - apply appropriate recovery
             if (isSleeping[uuid] == true) {
                 forceSleepPose(pokemon)
                 lockSleepRotation(pokemon)
@@ -119,13 +134,13 @@ object SanityManager {
                 recoverWhileIdle(pokemon)
             }
 
-
+            persistSanity(pokemon, getSanity(pokemon))
             return false
         }
 
-        // Below threshold - begin refusal
         if (currentSanity < REFUSE_THRESHOLD) {
             beginRefusal(pokemon, world)
+            persistSanity(pokemon, getSanity(pokemon))
             return false
         }
 
@@ -133,49 +148,39 @@ object SanityManager {
     }
 
     fun drainWhileWorking(pokemon: PokemonEntity) {
-        val uuid = pokemon.pokemon.uuid
-        val currentSanity = getSanity(pokemon)
-        sanity[uuid] = max(0.0, currentSanity - WORK_DRAIN_PER_TICK)
+        val newVal = max(0.0, getSanity(pokemon) - WORK_DRAIN_PER_TICK)
+        persistSanity(pokemon, newVal)
     }
 
     fun recoverWhileIdle(pokemon: PokemonEntity) {
-        val uuid = pokemon.pokemon.uuid
-        sanity[uuid] = min(MAX_SANITY, getSanity(pokemon) + REST_RECOVERY_PER_TICK)
+        val newVal = min(MAX_SANITY, getSanity(pokemon) + REST_RECOVERY_PER_TICK)
+        persistSanity(pokemon, newVal)
     }
 
     fun recoverWhileSleeping(pokemon: PokemonEntity) {
-        val uuid = pokemon.pokemon.uuid
-        sanity[uuid] = min(MAX_SANITY, getSanity(pokemon) + (REST_RECOVERY_PER_TICK * SLEEP_RECOVERY_MULTIPLIER))
+        val newVal =
+            min(MAX_SANITY, getSanity(pokemon) + (REST_RECOVERY_PER_TICK * SLEEP_RECOVERY_MULTIPLIER))
+        persistSanity(pokemon, newVal)
     }
 
-    /**
-     * Check if Pokemon should complain this tick.
-     * Only complains once per stretch below 50% sanity.
-     */
     fun shouldComplain(pokemon: PokemonEntity, world: World): Boolean {
         val uuid = pokemon.pokemon.uuid
         val currentSanity = getSanity(pokemon)
 
-        // Reset complaint flag when back above threshold
         if (currentSanity >= COMPLAINING_THRESHOLD) {
             hasComplainedDuringThisStretch[uuid] = false
             return false
         }
 
-        // Already complained during this low-sanity stretch
-        if (hasComplainedDuringThisStretch[uuid] == true) {
+        if (hasComplainedDuringThisStretch[uuid] == true)
             return false
-        }
 
-        // Check if enough time has passed since last check
         val lastCheck = lastComplaintCheck[uuid] ?: 0L
-        if (world.time - lastCheck < COMPLAINT_CHECK_INTERVAL) {
+        if (world.time - lastCheck < COMPLAINT_CHECK_INTERVAL)
             return false
-        }
 
         lastComplaintCheck[uuid] = world.time
 
-        // Complain and mark as complained for this stretch
         if (isComplaining(pokemon)) {
             hasComplainedDuringThisStretch[uuid] = true
             return true
@@ -184,44 +189,38 @@ object SanityManager {
         return false
     }
 
+
     fun beginRefusal(pokemon: PokemonEntity, world: World) {
         val uuid = pokemon.pokemon.uuid
-        if (isRefusing[uuid] != true) {
-            isRefusing[uuid] = true
-            breakStartTime[uuid] = world.time
+        if (isRefusing[uuid] == true)
+            return
 
-            val name = pokemon.pokemon.getDisplayName().string
+        isRefusing[uuid] = true
+        breakStartTime[uuid] = world.time
 
-            // RNG: 50% chance to sleep, 50% chance to just wander/slack
-            val willSleep = Random.nextDouble() < SLEEP_CHANCE
-            isSleeping[uuid] = willSleep
+        val name = pokemon.pokemon.getDisplayName().string
+        val willSleep = Random.nextDouble() < SLEEP_CHANCE
 
-            if (willSleep) {
-                isSleeping[uuid] = true
-                forceSleepPose(pokemon)
-                sendActionBar(pokemon, "$name is fast asleep!", Formatting.GOLD)
-            } else {
-                isSleeping[uuid] = false
-                sendActionBar(pokemon, "$name is slacking off!", Formatting.RED)
-            }
+        isSleeping[uuid] = willSleep
+
+        if (willSleep) {
+            forceSleepPose(pokemon)
+            sendActionBar(pokemon, "$name is fast asleep!", Formatting.GOLD)
+        } else {
+            sendActionBar(pokemon, "$name is slacking off!", Formatting.RED)
         }
     }
 
-    fun needsForcedBreak(pokemon: PokemonEntity): Boolean {
-        val currentSanity = getSanity(pokemon)
-        return currentSanity < REFUSE_THRESHOLD
-    }
 
-    fun isRefusingWork(pokemon: PokemonEntity): Boolean {
-        return isRefusing[pokemon.pokemon.uuid] == true
-    }
+    fun needsForcedBreak(pokemon: PokemonEntity) =
+        getSanity(pokemon) < REFUSE_THRESHOLD
 
-    /**
-     * Returns true if Pokemon is currently sleeping during refusal.
-     */
-    fun isSleepingDuringBreak(pokemon: PokemonEntity): Boolean {
-        return isSleeping[pokemon.pokemon.uuid] == true
-    }
+    fun isRefusingWork(pokemon: PokemonEntity) =
+        isRefusing[pokemon.pokemon.uuid] == true
+
+    fun isSleepingDuringBreak(pokemon: PokemonEntity) =
+        isSleeping[pokemon.pokemon.uuid] == true
+
 
     fun clear(pokemon: PokemonEntity) {
         val uuid = pokemon.pokemon.uuid
@@ -233,19 +232,18 @@ object SanityManager {
         hasComplainedDuringThisStretch.remove(uuid)
     }
 
+
+    /* ---------------- Sleep Visual Handling ---------------- */
+
     private fun forceSleepPose(pokemon: PokemonEntity) {
         try {
             pokemon.navigation?.stop()
-
             pokemon.velocity = pokemon.velocity.multiply(0.0, 1.0, 0.0)
-
             pokemon.noClip = false
             pokemon.setNoGravity(false)
 
             val uuid = pokemon.pokemon.uuid
-            if (!sleepYaw.containsKey(uuid)) {
-                sleepYaw[uuid] = pokemon.yaw
-            }
+            sleepYaw.putIfAbsent(uuid, pokemon.yaw)
 
             pokemon.dataTracker.set(PokemonEntity.POSE_TYPE, PoseType.SLEEP)
 
@@ -255,7 +253,6 @@ object SanityManager {
             } catch (_: Exception) {}
         }
     }
-
 
     private fun clearSleepPose(pokemon: PokemonEntity) {
         try {
@@ -270,37 +267,24 @@ object SanityManager {
         pokemon.wakeUp()
     }
 
-
     private fun lockSleepRotation(pokemon: PokemonEntity) {
-        val uuid = pokemon.pokemon.uuid
-        val yaw = sleepYaw[uuid] ?: return
-
+        val yaw = sleepYaw[pokemon.pokemon.uuid] ?: return
         pokemon.yaw = yaw
         pokemon.prevYaw = yaw
         pokemon.headYaw = yaw
         pokemon.bodyYaw = yaw
     }
 
-    /**
-     * Debug/admin command to set sanity.
-     */
-    fun setSanity(pokemon: PokemonEntity, value: Double) {
-        sanity[pokemon.pokemon.uuid] = value.coerceIn(0.0, MAX_SANITY)
-    }
+    /* ---------------- UI + Debug ---------------- */
 
-    /**
-     * Get a readable status string for debugging or UI display.
-     */
     fun getStatus(pokemon: PokemonEntity): String {
         val currentSanity = getSanity(pokemon)
         val refusing = isRefusing[pokemon.pokemon.uuid] == true
         val sleeping = isSleeping[pokemon.pokemon.uuid] == true
 
-        // Natural sleep should show same message
         val pose = pokemon.dataTracker.get(PokemonEntity.POSE_TYPE)
-        if (!refusing && pose == PoseType.SLEEP) {
+        if (!refusing && pose == PoseType.SLEEP)
             return "Is fast asleep... (${currentSanity.toInt()}%)"
-        }
 
         return when {
             refusing && sleeping -> "Is fast asleep... (${currentSanity.toInt()}%)"
@@ -313,18 +297,12 @@ object SanityManager {
         }
     }
 
-    /**
-     * Get sanity percentage as integer for UI display.
-     */
-    fun getSanityPercent(pokemon: PokemonEntity): Int {
-        return getSanity(pokemon).toInt()
-    }
+    fun getSanityPercent(pokemon: PokemonEntity): Int =
+        getSanity(pokemon).toInt()
 
     private fun sendActionBar(pokemon: PokemonEntity, message: String, color: Formatting) {
-        val text = Text.literal(message).formatted(color)
         val owner = pokemon.owner
-        if (owner is ServerPlayerEntity) {
-            owner.sendMessage(text, true)
-        }
+        if (owner is ServerPlayerEntity)
+            owner.sendMessage(Text.literal(message).formatted(color), true)
     }
 }
