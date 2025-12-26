@@ -13,6 +13,7 @@ import accieo.cobbleworkers.interfaces.Worker
 import accieo.cobbleworkers.utilities.DeferredBlockScanner
 import accieo.cobbleworkers.sanity.SanityManager
 import accieo.cobbleworkers.sanity.SanityHudSyncServer
+import accieo.cobbleworkers.sanity.SanityStorage
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
@@ -74,6 +75,9 @@ object WorkerDispatcher {
      */
     fun tickPokemon(world: World, pastureOrigin: BlockPos, pokemonEntity: PokemonEntity) {
 
+        // --- ENSURE SANITY IS LOADED (PERSISTENCE GUARANTEE) ---
+        SanityStorage.load(pokemonEntity)
+
         val owner = pokemonEntity.owner
         if (owner is ServerPlayerEntity) {
             SanityHudSyncServer.tick(owner)
@@ -99,6 +103,19 @@ object WorkerDispatcher {
             return
         }
 
+        // ===== NATURAL SLEEP CHECK =====
+        val currentPose = pokemonEntity.dataTracker.get(PokemonEntity.POSE_TYPE)
+        if (currentPose == com.cobblemon.mod.common.entity.PoseType.SLEEP) {
+            // Treat natural sleep EXACTLY like forced rest sleep
+            workers.forEach { it.interrupt(pokemonEntity, world) }
+            pokemonEntity.navigation.stop()
+
+            SanityManager.recoverWhileSleeping(pokemonEntity)
+            SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
+
+            return
+        }
+
         // ===== WORK PHASE =====
         val eligibleWorkers = workers.filter { it.shouldRun(pokemonEntity) }
 
@@ -111,9 +128,9 @@ object WorkerDispatcher {
             .filter { it.shouldRun(pokemonEntity) }
             .any { it.isActivelyWorking(pokemonEntity) }
 
-
         if (activelyWorking) {
             SanityManager.drainWhileWorking(pokemonEntity)
+            SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
 
             if (SanityManager.shouldComplain(pokemonEntity, world)) {
                 // optional effects here
@@ -128,7 +145,6 @@ object WorkerDispatcher {
      * Sleeping recovers 3.5x faster than idle.
      */
     private fun handleRecovery(pokemonEntity: PokemonEntity) {
-        // Check if Pokemon is sleeping
         val currentPose = pokemonEntity.dataTracker.get(PokemonEntity.POSE_TYPE)
 
         if (currentPose == com.cobblemon.mod.common.entity.PoseType.SLEEP) {
@@ -136,6 +152,8 @@ object WorkerDispatcher {
         } else {
             SanityManager.recoverWhileIdle(pokemonEntity)
         }
+
+        SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
     }
 
     /**
@@ -148,7 +166,6 @@ object WorkerDispatcher {
         val isWorking = workers.any { worker ->
             when (worker) {
                 is FuelGenerator -> worker.isPokemonTending(pokemonUuid)
-                // Add other workers that require Pokemon to stay awake
                 else -> false
             }
         }
@@ -162,18 +179,10 @@ object WorkerDispatcher {
         DeferredBlockScanner.tickPastureAreaScan(world, origin, jobValidators, true)
     }
 
-    /**
-     * Gets the current sanity percentage for a Pokemon.
-     * Useful for UI display or debugging.
-     */
     fun getSanityPercent(pokemonEntity: PokemonEntity): Int {
         return SanityManager.getSanityPercent(pokemonEntity)
     }
 
-    /**
-     * Gets a readable status string for a Pokemon.
-     * Useful for debugging or UI tooltips.
-     */
     fun getStatus(pokemonEntity: PokemonEntity): String {
         return SanityManager.getStatus(pokemonEntity)
     }
@@ -185,7 +194,6 @@ object WorkerDispatcher {
             } catch (_: Exception) {}
         }
     }
-
 
     fun forceValidators() = jobValidators
 }

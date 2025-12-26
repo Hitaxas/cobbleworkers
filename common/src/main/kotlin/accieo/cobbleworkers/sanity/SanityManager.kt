@@ -33,13 +33,13 @@ object SanityManager {
     private val sleepYaw: MutableMap<UUID, Float> = ConcurrentHashMap()
 
     // for some reason, values lower than 0.1 seem to not update/allow the HUD to show...
-    private const val WORK_DRAIN_PER_TICK =  0.0104 // 0.000625 // around 0.0125/second
+    private const val WORK_DRAIN_PER_TICK =  0.0052 // 0.000625 // around 0.0125/second
     private const val REST_RECOVERY_PER_TICK = 0.025 // around 0.5/second
     private const val SLEEP_RECOVERY_MULTIPLIER = 3.5 // 3.5x faster when sleeping
     private const val MIN_BREAK_DURATION_TICKS = 20L * 60L // 1 minute minimum
 
     // RNG chances for slacking behavior (50-30% sanity range)
-    private const val SLACK_CHANCE_AT_50 = 0.05 // 5% chance per tick at 50%
+    private const val SLACK_CHANCE_AT_50 = 0.01 // 1% chance per tick at 50%
     private const val SLACK_CHANCE_AT_30 = 1.00 // 100% chance per tick at 30%
 
     // Sleep chance when refusing work (below 50% sanity)
@@ -295,6 +295,12 @@ object SanityManager {
         val currentSanity = getSanity(pokemon)
         val refusing = isRefusing[pokemon.pokemon.uuid] == true
         val sleeping = isSleeping[pokemon.pokemon.uuid] == true
+
+        // Natural sleep should show same message
+        val pose = pokemon.dataTracker.get(PokemonEntity.POSE_TYPE)
+        if (!refusing && pose == PoseType.SLEEP) {
+            return "Is fast asleep... (${currentSanity.toInt()}%)"
+        }
 
         return when {
             refusing && sleeping -> "Is fast asleep... (${currentSanity.toInt()}%)"
