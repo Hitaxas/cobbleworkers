@@ -20,6 +20,8 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
+import com.cobblemon.mod.common.api.storage.party.PlayerPartyStore
+import com.cobblemon.mod.common.api.storage.party.PartyStore
 
 object SanityManager {
 
@@ -235,9 +237,14 @@ object SanityManager {
     }
 
     fun shouldUseBed(pokemon: PokemonEntity, world: World): Boolean {
-        val uuid = pokemon.pokemon.uuid
+        val pData = pokemon.pokemon
+        val uuid = pData.uuid
 
-        // Figure out how to prevent player party pokemon from using this...
+        // Party pokemon will not use beds
+        val currentStore = pData.storeCoordinates.get()?.store
+        if (currentStore is PlayerPartyStore) {
+            return false
+        }
 
         // Already on a bed
         if (PokeBedManager.isSleepingOnBed(uuid)) return false
