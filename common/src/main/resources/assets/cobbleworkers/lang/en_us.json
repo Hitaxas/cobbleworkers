@@ -123,5 +123,7 @@
   "text.autoconfig.cobbleworkers.option.scouts.useAllStructures": "Generate maps for all registered in-game structures",
   "text.autoconfig.cobbleworkers.option.scouts.mapNameIsHidden": "Structure name is hidden in map item",
   "text.autoconfig.cobbleworkers.option.scouts.structureTags": "Structure tags",
-  "text.autoconfig.cobbleworkers.option.scouts.typeScouts": "Pokémon type that generates maps"
+  "text.autoconfig.cobbleworkers.option.scouts.typeScouts": "Pokémon type that generates maps",
+  "block.cobbleworkers.pokebed": "PokeBed",
+  "item.cobbleworkers.pokebed": "PokeBed"
 }

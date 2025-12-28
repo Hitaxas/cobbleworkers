@@ -8,6 +8,7 @@
 
 package accieo.cobbleworkers.sanity
 
+import accieo.cobbleworkers.pokebed.PokeBedManager
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import com.cobblemon.mod.common.entity.PoseType
 import net.minecraft.server.network.ServerPlayerEntity
@@ -42,6 +43,10 @@ object SanityManager {
 
     private const val COMPLAINT_CHECK_INTERVAL = 20L * 5L
 
+    // PokeBed bonuses
+    private const val POKEBED_IDLE_RECOVERY_MULTIPLIER = 2.0  // 2x when on bed
+    private const val POKEBED_SLEEP_RECOVERY_MULTIPLIER = 3.0  // 3x when sleeping on bed
+
     /* ------------------------------ STATE ------------------------------ */
 
     private val sanity: MutableMap<UUID, Double> = ConcurrentHashMap()
@@ -50,7 +55,6 @@ object SanityManager {
     private val isSleeping: MutableMap<UUID, Boolean> = ConcurrentHashMap()
     private val lastComplaintCheck: MutableMap<UUID, Long> = ConcurrentHashMap()
     private val hasComplainedDuringThisStretch: MutableMap<UUID, Boolean> = ConcurrentHashMap()
-
 
     /* ===================================================================
        TRUE PERSISTENT STORAGE
@@ -152,15 +156,28 @@ object SanityManager {
         persistSanity(pokemon, newVal)
     }
 
+    private fun isOnPokeBed(pokemon: PokemonEntity): Boolean {
+        return PokeBedManager.isSleepingOnBed(pokemon.pokemon.uuid)
+    }
+
     fun recoverWhileIdle(pokemon: PokemonEntity) {
-        val newVal = min(MAX_SANITY, getSanity(pokemon) + REST_RECOVERY_PER_TICK)
-        persistSanity(pokemon, newVal)
+        val baseRecovery = REST_RECOVERY_PER_TICK
+        val actualRecovery = if (isOnPokeBed(pokemon)) {
+            baseRecovery * POKEBED_IDLE_RECOVERY_MULTIPLIER
+        } else {
+            baseRecovery
+        }
+        persistSanity(pokemon, min(MAX_SANITY, getSanity(pokemon) + actualRecovery))
     }
 
     fun recoverWhileSleeping(pokemon: PokemonEntity) {
-        val newVal =
-            min(MAX_SANITY, getSanity(pokemon) + (REST_RECOVERY_PER_TICK * SLEEP_RECOVERY_MULTIPLIER))
-        persistSanity(pokemon, newVal)
+        val baseRecovery = REST_RECOVERY_PER_TICK * SLEEP_RECOVERY_MULTIPLIER
+        val actualRecovery = if (isOnPokeBed(pokemon)) {
+            baseRecovery * POKEBED_SLEEP_RECOVERY_MULTIPLIER
+        } else {
+            baseRecovery
+        }
+        persistSanity(pokemon, min(MAX_SANITY, getSanity(pokemon) + actualRecovery))
     }
 
     fun shouldComplain(pokemon: PokemonEntity, world: World): Boolean {
@@ -189,7 +206,6 @@ object SanityManager {
         return false
     }
 
-
     fun beginRefusal(pokemon: PokemonEntity, world: World) {
         val uuid = pokemon.pokemon.uuid
         if (isRefusing[uuid] == true)
@@ -204,13 +220,103 @@ object SanityManager {
         isSleeping[uuid] = willSleep
 
         if (willSleep) {
-            forceSleepPose(pokemon)
-            sendActionBar(pokemon, "$name is fast asleep!", Formatting.GOLD)
+            // Try to find and claim a bed
+            val bedPos = PokeBedManager.findNearestBed(world, pokemon.blockPos, uuid)
+            if (bedPos != null && PokeBedManager.claimBed(uuid, bedPos, world)) {
+                sendActionBar(pokemon, "$name is looking for a place to sleep...", Formatting.GOLD)
+            } else {
+                // No bed available, sleep on the ground
+                forceSleepPose(pokemon)
+                sendActionBar(pokemon, "$name is fast asleep!", Formatting.GOLD)
+            }
         } else {
             sendActionBar(pokemon, "$name is slacking off!", Formatting.RED)
         }
     }
 
+    fun shouldUseBed(pokemon: PokemonEntity, world: World): Boolean {
+        val uuid = pokemon.pokemon.uuid
+
+        // Figure out how to prevent player party pokemon from using this...
+
+        // Already on a bed
+        if (PokeBedManager.isSleepingOnBed(uuid)) return false
+
+        // Check if refusing work and wants to sleep
+        if (isRefusing[uuid] == true && isSleeping[uuid] == true) {
+            return true
+        }
+
+        // Check if it's night times
+        if (PokeBedManager.isNightTime(world)) {
+            accieo.cobbleworkers.jobs.WorkerDispatcher.releasePokemonFromJobs(pokemon)
+            return true
+        }
+
+        return false
+    }
+
+    fun tickBedSleep(pokemon: PokemonEntity, world: World) {
+        val uuid = pokemon.pokemon.uuid
+        val bedPos = PokeBedManager.getClaimedBed(uuid)
+
+        if (bedPos == null) return
+
+        // Check if at bed
+        if (!PokeBedManager.isAtBed(pokemon)) {
+            // Navigate to bed
+            PokeBedManager.navigateToBed(pokemon)
+            return
+        }
+
+        // At bed - start sleeping if not already
+        if (!PokeBedManager.isSleepingOnBed(uuid)) {
+            PokeBedManager.startSleeping(uuid, world)
+            forceSleepPose(pokemon)
+            lockSleepRotation(pokemon)
+
+            // Position Pokemon on the bed
+            val bedCenter = bedPos.toCenterPos()
+            pokemon.setPosition(bedCenter.x, bedPos.y + 0.1875, bedCenter.z) // Bed height
+        }
+
+        // Recover sanity while on bed
+        pokemon.navigation?.stop()
+        pokemon.velocity = pokemon.velocity.multiply(0.0, 1.0, 0.0)
+        recoverWhileSleeping(pokemon)
+        forceSleepPose(pokemon)
+        lockSleepRotation(pokemon)
+        persistSanity(pokemon, getSanity(pokemon))
+
+        // Check if should wake up
+        val currentSanity = getSanity(pokemon)
+        val timeSleeping = world.time - (breakStartTime[uuid] ?: world.time)
+
+        val shouldWake = (currentSanity >= RESUME_THRESHOLD && timeSleeping >= MIN_BREAK_DURATION_TICKS) ||
+                !PokeBedManager.isNightTime(world) // Wake at dawn
+
+        if (shouldWake) {
+            wakeFromBed(pokemon)
+        }
+    }
+
+    fun wakeFromBed(pokemon: PokemonEntity) {
+        val uuid = pokemon.pokemon.uuid
+
+        // Clear sleep states
+        isRefusing[uuid] = false
+        isSleeping[uuid] = false
+        breakStartTime.remove(uuid)
+
+        // Clear pose
+        clearSleepPose(pokemon)
+
+        // Release bed
+        PokeBedManager.releaseBed(uuid)
+
+        val name = pokemon.pokemon.getDisplayName().string
+        sendActionBar(pokemon, "$name woke up feeling refreshed!", Formatting.GREEN)
+    }
 
     fun needsForcedBreak(pokemon: PokemonEntity) =
         getSanity(pokemon) < REFUSE_THRESHOLD
@@ -221,7 +327,6 @@ object SanityManager {
     fun isSleepingDuringBreak(pokemon: PokemonEntity) =
         isSleeping[pokemon.pokemon.uuid] == true
 
-
     fun clear(pokemon: PokemonEntity) {
         val uuid = pokemon.pokemon.uuid
         sanity.remove(uuid)
@@ -230,12 +335,15 @@ object SanityManager {
         isSleeping.remove(uuid)
         lastComplaintCheck.remove(uuid)
         hasComplainedDuringThisStretch.remove(uuid)
-    }
+        sleepYaw.remove(uuid)
 
+        // Release any claimed bed
+        PokeBedManager.clearPokemon(uuid)
+    }
 
     /* ---------------- Sleep Visual Handling ---------------- */
 
-    private fun forceSleepPose(pokemon: PokemonEntity) {
+    fun forceSleepPose(pokemon: PokemonEntity) {
         try {
             pokemon.navigation?.stop()
             pokemon.velocity = pokemon.velocity.multiply(0.0, 1.0, 0.0)

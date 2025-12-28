@@ -14,6 +14,7 @@ import accieo.cobbleworkers.utilities.DeferredBlockScanner
 import accieo.cobbleworkers.sanity.SanityManager
 import accieo.cobbleworkers.sanity.SanityHudSyncServer
 import accieo.cobbleworkers.sanity.SanityStorage
+import accieo.cobbleworkers.pokebed.PokeBedManager
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
 import net.minecraft.util.math.BlockPos
 import net.minecraft.world.World
@@ -67,6 +68,9 @@ object WorkerDispatcher {
             pastureOrigin,
             jobValidators
         )
+
+        // Cleanup expired bed claims every tick (lightweight operation)
+        PokeBedManager.cleanupExpiredClaims(world)
     }
 
     /**
@@ -83,6 +87,15 @@ object WorkerDispatcher {
             SanityHudSyncServer.tick(owner)
         }
 
+        // === BED SLEEP CHECK (highest priority) ===
+        val hasBedClaim = PokeBedManager.getClaimedBed(pokemonEntity.pokemon.uuid) != null
+        if (hasBedClaim) {
+            // Pokemon is in bed sleep cycle
+            workers.forEach { it.interrupt(pokemonEntity, world) }
+            SanityManager.tickBedSleep(pokemonEntity, world)
+            return
+        }
+
         // ===== REFUSAL STATE (Below 50% sanity) =====
         if (SanityManager.isRefusingWork(pokemonEntity)) {
             SanityManager.canWork(pokemonEntity, world)
@@ -94,6 +107,19 @@ object WorkerDispatcher {
             workers.forEach { it.interrupt(pokemonEntity, world) }
             pokemonEntity.navigation.stop()
             SanityManager.beginRefusal(pokemonEntity, world)
+            return
+        }
+
+        // === NIGHT TIME BED SEEKING ===
+        if (SanityManager.shouldUseBed(pokemonEntity, world)) {
+            workers.forEach { it.interrupt(pokemonEntity, world) }
+            pokemonEntity.navigation.stop()
+
+            val bedPos = PokeBedManager.findNearestBed(world, pokemonEntity.blockPos, pokemonEntity.pokemon.uuid)
+            if (bedPos != null && PokeBedManager.claimBed(pokemonEntity.pokemon.uuid, bedPos, world)) {
+                SanityManager.forceSleepPose(pokemonEntity)
+                // Will navigate to bed on next tick
+            }
             return
         }
 
@@ -156,6 +182,12 @@ object WorkerDispatcher {
         SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
     }
 
+    fun isPokemonWorking(pokemon: PokemonEntity): Boolean {
+        return workers
+            .filter { it.shouldRun(pokemon) }
+            .any { it.isActivelyWorking(pokemon) }
+    }
+
     /**
      * Forces Pokemon to wake up if they're actively working.
      * Used to prevent sleeping during critical work tasks.
@@ -193,6 +225,9 @@ object WorkerDispatcher {
                 worker.interrupt(pokemon, pokemon.world)
             } catch (_: Exception) {}
         }
+
+        // Release any claimed bed
+        PokeBedManager.clearPokemon(pokemon.pokemon.uuid)
     }
 
     fun forceValidators() = jobValidators

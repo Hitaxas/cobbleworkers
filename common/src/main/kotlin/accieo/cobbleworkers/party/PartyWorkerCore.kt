@@ -22,7 +22,7 @@ import net.minecraft.util.math.Box
 
 object PartyWorkerCore {
 
-    private val activePartyPokemon = ConcurrentHashMap.newKeySet<UUID>()
+    public val activePartyPokemon = ConcurrentHashMap.newKeySet<UUID>()
     private val pokemonWorkOrigin = ConcurrentHashMap<UUID, BlockPos>()
 
     fun markActive(pokemon: PokemonEntity) {

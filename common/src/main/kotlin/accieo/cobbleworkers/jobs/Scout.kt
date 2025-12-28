@@ -8,7 +8,6 @@
 
 package accieo.cobbleworkers.jobs
 
-import accieo.cobbleworkers.Cobbleworkers
 import accieo.cobbleworkers.cache.CobbleworkersCacheManager
 import accieo.cobbleworkers.config.CobbleworkersConfigHolder
 import accieo.cobbleworkers.enums.JobType
@@ -275,16 +274,23 @@ object Scout : Worker {
 
     override fun interrupt(pokemon: PokemonEntity, world: World) {
         val id = pokemon.pokemon.uuid
+        var hadState = false
 
-        // Drop any “currently collected” items
-        heldItemsByPokemon.remove(id)
+        if (heldItemsByPokemon.remove(id) != null) {
+            hadState = true
+        }
 
-        // Clear failed deposit memory
-        failedDepositLocations.remove(id)
+        if (failedDepositLocations.remove(id) != null) {
+            hadState = true
+        }
 
-        // Release navigation target
-        CobbleworkersNavigationUtils.releaseTarget(id, world)
+        if (CobbleworkersNavigationUtils.getTarget(id, world) != null) {
+            CobbleworkersNavigationUtils.releaseTarget(id, world)
+            hadState = true
+        }
 
-        LOGGER.debug("[Cobbleworkers][Scout] Interrupted and reset state for $id")
+        if (hadState) {
+            LOGGER.debug("[Cobbleworkers][Scout] Interrupted and reset state for $id")
+        }
     }
 }
