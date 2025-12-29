@@ -13,7 +13,6 @@ import accieo.cobbleworkers.interfaces.Worker
 import accieo.cobbleworkers.utilities.DeferredBlockScanner
 import accieo.cobbleworkers.sanity.SanityManager
 import accieo.cobbleworkers.sanity.SanityHudSyncServer
-import accieo.cobbleworkers.sanity.SanityStorage
 import accieo.cobbleworkers.pokebed.PokeBedManager
 import com.cobblemon.mod.common.api.storage.party.PlayerPartyStore
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity
@@ -80,31 +79,31 @@ object WorkerDispatcher {
      * Called ONCE per Pokémon in the pasture per tick.
      */
     fun tickPokemon(world: World, pastureOrigin: BlockPos, pokemonEntity: PokemonEntity) {
-
-        // --- ENSURE SANITY IS LOADED (PERSISTENCE GUARANTEE) ---
-        SanityStorage.load(pokemonEntity)
+        SanityManager.getSanity(pokemonEntity)
 
         val owner = pokemonEntity.owner
         if (owner is ServerPlayerEntity) {
             SanityHudSyncServer.tick(owner)
         }
 
-        // === BED SLEEP CHECK (highest priority) ===
+        // 1. BED SLEEP (Active State)
+        // If they are currently at or going to a bed, this handles everything.
         val hasBedClaim = PokeBedManager.getClaimedBed(pokemonEntity.pokemon.uuid) != null
         if (hasBedClaim) {
-            // Pokemon is in bed sleep cycle
             workers.forEach { it.interrupt(pokemonEntity, world) }
             SanityManager.tickBedSleep(pokemonEntity, world)
             return
         }
 
-        // ===== REFUSAL STATE (Below 50% sanity) =====
+        // 2. REFUSAL/BREAK STATE
+        // If they are on strike, let SanityManager handle recovery and pose.
         if (SanityManager.isRefusingWork(pokemonEntity)) {
+            workers.forEach { it.interrupt(pokemonEntity, world) }
             SanityManager.canWork(pokemonEntity, world)
             return
         }
 
-        // ===== FORCED BREAK CHECK =====
+        // 3. STARTING A FORCED BREAK
         if (SanityManager.needsForcedBreak(pokemonEntity)) {
             workers.forEach { it.interrupt(pokemonEntity, world) }
             pokemonEntity.navigation.stop()
@@ -112,64 +111,45 @@ object WorkerDispatcher {
             return
         }
 
-        // === NIGHT TIME BED SEEKING ===
-
+        // 4. NIGHT TIME CHECK
+        // Only triggers if NOT already refusing or in a bed (checked above).
         val pData = pokemonEntity.pokemon
-        val uuid = pData.uuid
-
-        val currentStore = pData.storeCoordinates.get()?.store
-        val isPartyPokemon = currentStore is PlayerPartyStore
+        val isPartyPokemon = pData.storeCoordinates.get()?.store is PlayerPartyStore
 
         if (!isPartyPokemon && SanityManager.shouldUseBed(pokemonEntity, world)) {
-            workers.forEach { it.interrupt(pokemonEntity, world) }
-            pokemonEntity.navigation.stop()
-
-            val bedPos = PokeBedManager.findNearestBed(world, pokemonEntity.blockPos, uuid)
-            if (bedPos != null && PokeBedManager.claimBed(uuid, bedPos, world)) {
-                SanityManager.forceSleepPose(pokemonEntity)
-                // Will navigate to bed next tick
+            val bedPos = PokeBedManager.findNearestBed(world, pokemonEntity.blockPos, pData.uuid)
+            if (bedPos != null && PokeBedManager.claimBed(pData.uuid, bedPos, world)) {
+                workers.forEach { it.interrupt(pokemonEntity, world) }
+                pokemonEntity.navigation.stop()
+                // SanityManager.forceSleepPose(pokemonEntity) // Optional: Wait until they reach the bed
             }
             return
         }
 
-        // ===== RANDOM SLACK-OFF CHECK (50-30% sanity) =====
-        if (SanityManager.shouldSlackOff(pokemonEntity)) {
+        // 5. SLACK OFF (Random chance)
+        if (SanityManager.shouldSlackOff(pokemonEntity, world)) {
             handleRecovery(pokemonEntity)
             return
         }
 
-        // ===== NATURAL SLEEP CHECK =====
+        // 6. NATURAL SLEEP (Cobblemon native sleep)
         val currentPose = pokemonEntity.dataTracker.get(PokemonEntity.POSE_TYPE)
         if (currentPose == com.cobblemon.mod.common.entity.PoseType.SLEEP) {
-            // Treat natural sleep EXACTLY like forced rest sleep
             workers.forEach { it.interrupt(pokemonEntity, world) }
             pokemonEntity.navigation.stop()
-
             SanityManager.recoverWhileSleeping(pokemonEntity)
-            SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
-
             return
         }
 
-        // ===== WORK PHASE =====
+        // 7. WORK PHASE
         val eligibleWorkers = workers.filter { it.shouldRun(pokemonEntity) }
+        eligibleWorkers.forEach { it.tick(world, pastureOrigin, pokemonEntity) }
 
-        eligibleWorkers.forEach { worker ->
-            worker.tick(world, pastureOrigin, pokemonEntity)
-        }
-
-        // ===== SANITY MANAGEMENT =====
-        val activelyWorking = workers
-            .filter { it.shouldRun(pokemonEntity) }
-            .any { it.isActivelyWorking(pokemonEntity) }
-
-        if (activelyWorking) {
+        // 8. FINAL SANITY CHECK
+        val isActivelyWorking = eligibleWorkers.any { it.isActivelyWorking(pokemonEntity) }
+        if (isActivelyWorking) {
             SanityManager.drainWhileWorking(pokemonEntity)
-            SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
-
-            if (SanityManager.shouldComplain(pokemonEntity, world)) {
-                // optional effects here
-            }
+            SanityManager.shouldComplain(pokemonEntity, world)
         } else {
             handleRecovery(pokemonEntity)
         }
@@ -187,8 +167,7 @@ object WorkerDispatcher {
         } else {
             SanityManager.recoverWhileIdle(pokemonEntity)
         }
-
-        SanityStorage.save(pokemonEntity, SanityManager.getSanityPercent(pokemonEntity))
+        // No manual save needed; recover methods handle persistence
     }
 
     fun isPokemonWorking(pokemon: PokemonEntity): Boolean {
