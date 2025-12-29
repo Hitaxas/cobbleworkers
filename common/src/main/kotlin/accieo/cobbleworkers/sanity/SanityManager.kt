@@ -341,13 +341,12 @@ object SanityManager {
         val start = breakStartTime[uuid] ?: world.time
         val timeSleeping = world.time - start
         val isNight = PokeBedManager.isNightTime(world)
-
         val finishedMandatoryBreak = currentSanity >= RESUME_THRESHOLD && timeSleeping >= MIN_BREAK_DURATION_TICKS
 
-        val shouldWake = if (isRefusing[uuid] == true) {
-            finishedMandatoryBreak
+        val shouldWake = if (isNight) {
+            false
         } else {
-            !isNight // If just sleeping because it's night, wake up when it's day
+            if (isRefusing[uuid] == true) finishedMandatoryBreak else true
         }
 
         if (shouldWake) {
