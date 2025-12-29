@@ -160,8 +160,23 @@ object SanityManager {
                 return true
             }
 
+            if (isSleeping[uuid] == false && PokeBedManager.isNightTime(world)) {
+                val store = pokemon.pokemon.storeCoordinates.get()?.store
+                if (store !is PlayerPartyStore) { // Party Pokemon don't use beds
+                    isSleeping[uuid] = true
+                    val name = pokemon.pokemon.getDisplayName().string
+
+                    val bedPos = PokeBedManager.findNearestBed(world, pokemon.blockPos, uuid)
+                    if (bedPos != null && PokeBedManager.claimBed(uuid, bedPos, world)) {
+                        sendActionBar(pokemon, "$name decided to find a bed for the night...", Formatting.GOLD)
+                    } else {
+                        forceSleepPose(pokemon)
+                        sendActionBar(pokemon, "$name is too tired and fell asleep!", Formatting.GOLD)
+                    }
+                }
+            }
+
             if (isSleeping[uuid] == true) {
-                // If it's supposed to be sleeping but not on a bed, force the pose here
                 if (!PokeBedManager.isSleepingOnBed(uuid)) {
                     forceSleepPose(pokemon)
                     lockSleepRotation(pokemon)
