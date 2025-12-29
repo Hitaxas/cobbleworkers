@@ -12,15 +12,6 @@ import com.cobblemon.mod.common.pokemon.Pokemon
 
 object SanityManagerExtensions {
 
-    fun getSanity(pokemon: Pokemon): Double {
-        val tag = pokemon.persistentData
-        return if (tag.contains("cobbleworkers_sanity")) {
-            tag.getDouble("cobbleworkers_sanity").coerceIn(0.0, SanityManager.MAX_SANITY)
-        } else {
-            SanityManager.MAX_SANITY
-        }
-    }
-
     fun getSanityPercent(pokemon: Pokemon): Int {
         val tag = pokemon.persistentData
         return if (tag.contains("cobbleworkers_sanity")) {
@@ -28,32 +19,5 @@ object SanityManagerExtensions {
         } else {
             100
         }
-    }
-
-    fun getStatus(pokemon: Pokemon): String {
-        val currentSanity = getSanity(pokemon)
-        val tag = pokemon.persistentData
-        val isRefusing = tag.getBoolean("cobbleworkers_refusing")
-        val isSleeping = tag.getBoolean("cobbleworkers_sleeping")
-
-        return when {
-            isRefusing && isSleeping -> "Is fast asleep... (${currentSanity.toInt()}%)"
-            isRefusing -> "Is slacking off! (${currentSanity.toInt()}%)"
-            currentSanity < SanityManager.REFUSE_THRESHOLD -> "Has just about had it... (${currentSanity.toInt()}%)"
-            currentSanity < SanityManager.COMPLAINING_THRESHOLD -> "Unhappy with work conditions. (${currentSanity.toInt()}%)"
-            currentSanity >= 80 -> "Is hard at work. (${currentSanity.toInt()}%)"
-            currentSanity >= 60 -> "Is in good condition. (${currentSanity.toInt()}%)"
-            else -> "Is getting a bit tired... (${currentSanity.toInt()}%)"
-        }
-    }
-
-    fun isComplaining(pokemon: Pokemon): Boolean {
-        val currentSanity = getSanity(pokemon)
-        return currentSanity < SanityManager.COMPLAINING_THRESHOLD && 
-               currentSanity >= SanityManager.REFUSE_THRESHOLD
-    }
-
-    fun needsForcedBreak(pokemon: Pokemon): Boolean {
-        return getSanity(pokemon) < SanityManager.REFUSE_THRESHOLD
     }
 }
