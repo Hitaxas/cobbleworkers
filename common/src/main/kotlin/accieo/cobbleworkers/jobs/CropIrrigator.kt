@@ -228,14 +228,8 @@ object CropIrrigator : Worker {
         val id = pokemon.pokemon.uuid
         val state = states[id] ?: return false
 
-        // If actively spraying or navigating to farmland → working
-        if (state.isIrrigating) return true
-        if (CobbleworkersNavigationUtils.getTarget(id, pokemon.world) != null) return true
-
-        // Treat irrigation as "recent work" so sanity still drains
-        val worldTime = pokemon.world.time
-        val recentlyWorkedWindow = 20L * 5L // 5 seconds
-        return (worldTime - state.startTime) < recentlyWorkedWindow
+        // ONLY busy if actively in the "spraying" state
+        return state.isIrrigating
     }
 
 

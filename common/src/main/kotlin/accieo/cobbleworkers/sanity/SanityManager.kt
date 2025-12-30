@@ -331,7 +331,7 @@ object SanityManager {
             pokemon.velocity = net.minecraft.util.math.Vec3d.ZERO
         }
 
-        pokemon.navigation?.stop()
+        pokemon.navigation.stop()
         recoverWhileSleeping(pokemon)
         forceSleepPose(pokemon)
         lockSleepRotation(pokemon)
@@ -392,7 +392,7 @@ object SanityManager {
 
     fun forceSleepPose(pokemon: PokemonEntity) {
         try {
-            pokemon.navigation?.stop()
+            pokemon.navigation.stop()
             pokemon.velocity = pokemon.velocity.multiply(0.0, 1.0, 0.0)
 
             val uuid = pokemon.pokemon.uuid

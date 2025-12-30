@@ -89,4 +89,16 @@ object WaterGenerator : Worker {
         val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
         return config.waterGenerators.any { it.lowercase() == speciesName }
     }
+
+    override fun isActivelyWorking(pokemon: PokemonEntity): Boolean {
+        val pokemonId = pokemon.pokemon.uuid
+        val target = CobbleworkersNavigationUtils.getTarget(pokemonId, pokemon.world) ?: return false
+
+        // ONLY consider "busy" if we are close enough to be filling it
+        return CobbleworkersNavigationUtils.isPokemonAtPosition(pokemon, target)
+    }
+
+    override fun interrupt(pokemon: PokemonEntity, world: World) {
+        CobbleworkersNavigationUtils.releaseTarget(pokemon.pokemon.uuid, world)
+    }
 }

@@ -34,6 +34,7 @@ object WorkerDispatcher {
         BerryHarvester,
         BrewingStandFuelGenerator,
         CropHarvester,
+        WaterGenerator,
         CropIrrigator,
         DiveLooter,
         FireExtinguisher,
@@ -48,8 +49,7 @@ object WorkerDispatcher {
         PickUpLooter,
         Scout,
         SnowGenerator,
-        TumblestoneHarvester,
-        WaterGenerator,
+        TumblestoneHarvester
     )
 
     /**
@@ -143,11 +143,24 @@ object WorkerDispatcher {
 
         // 7. WORK PHASE
         val eligibleWorkers = workers.filter { it.shouldRun(pokemonEntity) }
-        eligibleWorkers.forEach { it.tick(world, pastureOrigin, pokemonEntity) }
+
+        val currentBusyWorker = eligibleWorkers.find { it.isActivelyWorking(pokemonEntity) }
+
+        if (currentBusyWorker != null) {
+            currentBusyWorker.tick(world, pastureOrigin, pokemonEntity)
+        } else {
+            for (worker in eligibleWorkers) {
+                worker.tick(world, pastureOrigin, pokemonEntity)
+                if (worker.isActivelyWorking(pokemonEntity)) {
+                    break
+                }
+            }
+        }
 
         // 8. FINAL SANITY CHECK
-        val isActivelyWorking = eligibleWorkers.any { it.isActivelyWorking(pokemonEntity) }
-        if (isActivelyWorking) {
+        val activelyWorking = currentBusyWorker != null || eligibleWorkers.any { it.isActivelyWorking(pokemonEntity) }
+
+        if (activelyWorking) {
             SanityManager.drainWhileWorking(pokemonEntity)
             SanityManager.shouldComplain(pokemonEntity, world)
         } else {
