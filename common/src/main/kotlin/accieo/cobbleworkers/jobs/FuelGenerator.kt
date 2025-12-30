@@ -36,7 +36,9 @@ object FuelGenerator : Worker {
     private val lastGenerationTime = mutableMapOf<UUID, Long>()
     private val pokemonTendingFurnaces = mutableMapOf<UUID, BlockPos>()
     private val lastSoundTime = mutableMapOf<UUID, Long>()
+    private val lastCookingSpeedBoost = mutableMapOf<BlockPos, Long>()
     private const val SOUND_INTERVAL = 30L
+    private const val COOKING_SPEED_BOOST_INTERVAL = 2L
 
     override val jobType: JobType = JobType.FuelGenerator
 
@@ -61,9 +63,18 @@ object FuelGenerator : Worker {
 
     private fun interruptWork(pokemonEntity: PokemonEntity, world: World) {
         val uuid = pokemonEntity.pokemon.uuid
+        val tendingPos = pokemonTendingFurnaces[uuid]
+        if (tendingPos != null) {
+            lastCookingSpeedBoost.remove(tendingPos)
+        }
         pokemonTendingFurnaces.remove(uuid)
         lastSoundTime.remove(uuid)
         CobbleworkersNavigationUtils.releaseTarget(uuid, world)
+    }
+
+    private fun isLegendaryOrMythical(pokemonEntity: PokemonEntity): Boolean {
+        val labels = pokemonEntity.pokemon.species.labels
+        return labels.contains("legendary") || labels.contains("mythical")
     }
 
     private fun handleFuelGeneration(world: World, origin: BlockPos, pokemonEntity: PokemonEntity) {
@@ -85,30 +96,31 @@ object FuelGenerator : Worker {
             }
 
             if (!isCooking(world, tendingPos)) {
-                // Furnace stopped because fuel ran out
                 if (hasItemsToSmelt(world, tendingPos) && needsFuel(world, tendingPos)) {
-
-                    // Bypass cooldown for continuous tending
                     addBurnTime(world, tendingPos)
                     lastGenerationTime[pokemonId] = now
 
-                    // If it successfully lit, stay tending
                     if (isCooking(world, tendingPos)) {
                         lastSoundTime[pokemonId] = now
                         playFireSound(world, tendingPos)
                     } else {
-                        // Couldn't restart for some reason — bail out cleanly
                         interruptWork(pokemonEntity, world)
                     }
 
                     return
                 }
 
-                // Nothing left to smelt → stop tending normally
                 interruptWork(pokemonEntity, world)
                 return
             }
 
+            if (isLegendaryOrMythical(pokemonEntity)) {
+                val lastBoost = lastCookingSpeedBoost[tendingPos] ?: 0L
+                if (now - lastBoost >= COOKING_SPEED_BOOST_INTERVAL) {
+                    boostCookingSpeed(world, tendingPos)
+                    lastCookingSpeedBoost[tendingPos] = now
+                }
+            }
 
             pokemonEntity.navigation.stop()
 
@@ -165,6 +177,91 @@ object FuelGenerator : Worker {
             } else {
                 CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
             }
+        }
+    }
+
+    private fun boostCookingSpeed(world: World, furnacePos: BlockPos) {
+        val blockEntity = world.getBlockEntity(furnacePos) ?: return
+        val state = world.getBlockState(furnacePos)
+        val id = Registries.BLOCK.getId(state.block).toString()
+
+        if (blockEntity is AbstractFurnaceBlockEntity) {
+            try {
+                val cookTimeField = blockEntity.javaClass.getDeclaredField("cookTime")
+                cookTimeField.isAccessible = true
+                val currentCookTime = cookTimeField.getInt(blockEntity)
+
+                val cookTimeTotalField = blockEntity.javaClass.getDeclaredField("cookTimeTotal")
+                cookTimeTotalField.isAccessible = true
+                val cookTimeTotal = cookTimeTotalField.getInt(blockEntity)
+
+                if (currentCookTime > 0 && currentCookTime < cookTimeTotal) {
+                    val newCookTime = (currentCookTime + 2).coerceAtMost(cookTimeTotal)
+                    cookTimeField.setInt(blockEntity, newCookTime)
+                    blockEntity.markDirty()
+                }
+            } catch (e: Exception) {
+                try {
+                    val nbt = blockEntity.createNbt(world.registryManager)
+                    val currentCookTime = nbt.getShort("CookTime").toInt()
+                    val cookTimeTotal = nbt.getShort("CookTimeTotal").toInt()
+
+                    if (currentCookTime > 0 && currentCookTime < cookTimeTotal) {
+                        val newCookTime = (currentCookTime + 2).coerceAtMost(cookTimeTotal)
+                        nbt.putShort("CookTime", newCookTime.toShort())
+                        blockEntity.read(nbt, world.registryManager)
+                        blockEntity.markDirty()
+                    }
+                } catch (_: Exception) {}
+            }
+        } else if (id.contains("cookingforblockheads") && id.contains("oven")) {
+            try {
+                val nbt = blockEntity.createNbt(world.registryManager)
+                var modified = false
+
+                if (nbt.contains("CookTimes")) {
+                    val cookTimes = nbt.getIntArray("CookTimes")
+                    val newCookTimes = IntArray(cookTimes.size)
+
+                    val maxCookTimes = if (nbt.contains("MaxCookTimes")) {
+                        nbt.getIntArray("MaxCookTimes")
+                    } else {
+                        IntArray(cookTimes.size) { 200 }
+                    }
+
+                    for (i in cookTimes.indices) {
+                        val currentCookTime = cookTimes[i]
+                        val maxCookTime = if (i < maxCookTimes.size) maxCookTimes[i] else 200
+
+                        if (currentCookTime > 0 && currentCookTime < maxCookTime - 3) {
+                            newCookTimes[i] = (currentCookTime + 2).coerceAtMost(maxCookTime - 2)
+                            modified = true
+                        } else {
+                            newCookTimes[i] = currentCookTime
+                        }
+                    }
+
+                    if (modified) {
+                        nbt.putIntArray("CookTimes", newCookTimes)
+
+                        try {
+                            blockEntity.read(nbt, world.registryManager)
+                        } catch (ex: Exception) {
+                            try {
+                                val readNbtMethod = blockEntity.javaClass.getMethod("readNbt", NbtCompound::class.java)
+                                readNbtMethod.invoke(blockEntity, nbt)
+                            } catch (ex2: Exception) {
+                                try {
+                                    val cookTimesField = blockEntity.javaClass.getDeclaredField("cookTimes")
+                                    cookTimesField.isAccessible = true
+                                    cookTimesField.set(blockEntity, newCookTimes)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        blockEntity.markDirty()
+                    }
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -322,8 +419,7 @@ object FuelGenerator : Worker {
         val dirZ = dz / distance
 
         repeat(8) {
-
-            val spread = 0.15 // Higher = wider cone
+            val spread = 0.15
             val vX = dirX + (world.random.nextDouble() - 0.5) * spread
             val vY = dirY + (world.random.nextDouble() - 0.5) * spread
             val vZ = dirZ + (world.random.nextDouble() - 0.5) * spread
@@ -460,16 +556,17 @@ object FuelGenerator : Worker {
         return config.fuelGenerators.any { it.lowercase() == speciesName }
     }
 
-    override fun isActivelyWorking(pokemonEntity: PokemonEntity): Boolean {
-        val uuid = pokemonEntity.pokemon.uuid
+    override fun isActivelyWorking(pokemon: PokemonEntity): Boolean {
+        val uuid = pokemon.pokemon.uuid
         val pos = pokemonTendingFurnaces[uuid] ?: return false
 
         if (
-            !blockValidator(pokemonEntity.world, pos) ||
-            !isCooking(pokemonEntity.world, pos)
+            !blockValidator(pokemon.world, pos) ||
+            !isCooking(pokemon.world, pos)
         ) {
             pokemonTendingFurnaces.remove(uuid)
             lastSoundTime.remove(uuid)
+            lastCookingSpeedBoost.remove(pos)
             return false
         }
 
@@ -481,6 +578,4 @@ object FuelGenerator : Worker {
             interruptWork(pokemonEntity, world)
         } catch (_: Exception) {}
     }
-
-
 }
