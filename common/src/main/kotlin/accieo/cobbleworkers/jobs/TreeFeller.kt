@@ -42,6 +42,7 @@ object TreeFeller : Worker {
     private data class TreeFellingState(
         val treeBase: BlockPos,
         val blocksToChop: MutableList<BlockPos>,
+        val leafPositions: Set<BlockPos>,
         var chopProgress: Long = 0,
         var isReplanting: Boolean = false
     )
@@ -50,7 +51,7 @@ object TreeFeller : Worker {
 
     override val blockValidator: ((World, BlockPos) -> Boolean) = { world: World, pos: BlockPos ->
         val state = world.getBlockState(pos)
-        isLogBlock(state.block) && isTreeBase(world, pos)
+        isLogBlock(state.block) && isTreeBase(world, pos) && hasLeavesNearby(world, pos)
     }
 
     override fun shouldRun(pokemonEntity: PokemonEntity): Boolean {
@@ -121,7 +122,22 @@ object TreeFeller : Worker {
         if (CobbleworkersNavigationUtils.isPokemonAtPosition(pokemonEntity, currentTarget, 3.5)) {
             val blocks = scanTree(world, currentTarget)
             if (blocks.isNotEmpty()) {
-                pokemonFellingTrees[pokemonId] = TreeFellingState(currentTarget, blocks.toMutableList())
+                val leafPositions = blocks.filter { pos ->
+                    isLeavesBlock(world.getBlockState(pos).block)
+                }.toSet()
+
+                leafPositions.forEach { pos ->
+                    val state = world.getBlockState(pos)
+                    if (state.block is LeavesBlock && state.contains(LeavesBlock.PERSISTENT)) {
+                        world.setBlockState(pos, state.with(LeavesBlock.PERSISTENT, true), Block.NOTIFY_LISTENERS)
+                    }
+                }
+
+                pokemonFellingTrees[pokemonId] = TreeFellingState(
+                    treeBase = currentTarget,
+                    blocksToChop = blocks.toMutableList(),
+                    leafPositions = leafPositions
+                )
             } else {
                 CobbleworkersNavigationUtils.releaseTarget(pokemonId, world)
             }
@@ -179,15 +195,31 @@ object TreeFeller : Worker {
         world.playSound(null, pos, SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, SoundCategory.BLOCKS, 0.5f, 0.9f)
     }
 
+    private fun hasLeavesNearby(world: World, logPos: BlockPos): Boolean {
+        val searchRadius = config.leavesSearchRadius
+        for (dx in -searchRadius..searchRadius) {
+            for (dy in -searchRadius..searchRadius) {
+                for (dz in -searchRadius..searchRadius) {
+                    val checkPos = logPos.add(dx, dy, dz)
+                    val state = world.getBlockState(checkPos)
+                    if (isLeavesBlock(state.block)) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
     private fun scanTree(world: World, startPos: BlockPos): List<BlockPos> {
         val logs = mutableListOf<BlockPos>()
         val leaves = mutableListOf<BlockPos>()
         val maxBlocks = config.maxTreeSize
-        
+
         val logVisited = mutableSetOf<BlockPos>()
         val logToVisit = mutableListOf(startPos)
 
-        while (logToVisit.isNotEmpty() && logs.size + leaves.size < maxBlocks) {
+        while (logToVisit.isNotEmpty() && logs.size < maxBlocks) {
             val current = logToVisit.removeAt(0)
             if (current in logVisited) continue
             logVisited.add(current)
@@ -204,7 +236,7 @@ object TreeFeller : Worker {
         }
 
         val leafVisited = mutableSetOf<BlockPos>()
-        val leafToVisit = mutableListOf<Pair<BlockPos, Int>>()
+        val leafToVisit = mutableListOf<BlockPos>()
 
         for (log in logs) {
             for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
@@ -212,25 +244,27 @@ object TreeFeller : Worker {
                 val neighbor = log.add(dx, dy, dz)
                 val state = world.getBlockState(neighbor)
                 if (isLeavesBlock(state.block) && neighbor !in leafVisited) {
-                    leafToVisit.add(neighbor to 1)
+                    leafToVisit.add(neighbor)
                 }
             }
         }
 
         while (leafToVisit.isNotEmpty() && logs.size + leaves.size < maxBlocks) {
-            val (current, depth) = leafToVisit.removeAt(0)
+            val current = leafToVisit.removeAt(0)
             if (current in leafVisited) continue
             leafVisited.add(current)
 
             val state = world.getBlockState(current)
             if (isLeavesBlock(state.block)) {
                 leaves.add(current)
-                if (depth < 7) {
-                    for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
-                        if (dx == 0 && dy == 0 && dz == 0) continue
-                        val neighbor = current.add(dx, dy, dz)
-                        if (neighbor !in leafVisited) {
-                            leafToVisit.add(neighbor to (depth + 1))
+                // Check all adjacent blocks for more leaves
+                for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
+                    if (dx == 0 && dy == 0 && dz == 0) continue
+                    val neighbor = current.add(dx, dy, dz)
+                    if (neighbor !in leafVisited) {
+                        val neighborState = world.getBlockState(neighbor)
+                        if (isLeavesBlock(neighborState.block)) {
+                            leafToVisit.add(neighbor)
                         }
                     }
                 }
@@ -242,12 +276,13 @@ object TreeFeller : Worker {
     }
 
     private fun findNearestTree(world: World, origin: BlockPos): BlockPos? {
-        val r = 32
+        val horizontalRadius = 32
+        val verticalRange = config.verticalSearchRange
         var best: BlockPos? = null
         var bestD = Double.MAX_VALUE
-        BlockPos.iterate(origin.add(-r, -4, -r), origin.add(r, 4, r)).forEach { p ->
+        BlockPos.iterate(origin.add(-horizontalRadius, -verticalRange, -horizontalRadius), origin.add(horizontalRadius, verticalRange, horizontalRadius)).forEach { p ->
             val d = p.getSquaredDistance(origin)
-            if (d < bestD && isLogBlock(world.getBlockState(p).block) && isTreeBase(world, p)) {
+            if (d < bestD && isLogBlock(world.getBlockState(p).block) && isTreeBase(world, p) && hasLeavesNearby(world, p)) {
                 if (!CobbleworkersNavigationUtils.isTargeted(p, world)) {
                     best = p.toImmutable()
                     bestD = d
@@ -269,7 +304,19 @@ object TreeFeller : Worker {
     override fun isActivelyWorking(p: PokemonEntity) = pokemonFellingTrees.containsKey(p.pokemon.uuid) || (heldItemsByPokemon[p.pokemon.uuid]?.isNotEmpty() == true)
 
     override fun interrupt(p: PokemonEntity, world: World) {
-        pokemonFellingTrees.remove(p.pokemon.uuid)
-        CobbleworkersNavigationUtils.releaseTarget(p.pokemon.uuid, world)
+        val uuid = p.pokemon.uuid
+        val state = pokemonFellingTrees[uuid]
+
+        if (state != null) {
+            state.leafPositions.forEach { pos ->
+                val blockState = world.getBlockState(pos)
+                if (blockState.block is LeavesBlock && blockState.contains(LeavesBlock.PERSISTENT)) {
+                    world.setBlockState(pos, blockState.with(LeavesBlock.PERSISTENT, false), Block.NOTIFY_LISTENERS)
+                }
+            }
+        }
+
+        pokemonFellingTrees.remove(uuid)
+        CobbleworkersNavigationUtils.releaseTarget(uuid, world)
     }
 }

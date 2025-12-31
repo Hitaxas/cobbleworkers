@@ -342,7 +342,9 @@ class CobbleworkersConfig : ConfigData {
     class TreeFellingGroup {
         var treeFellersEnabled = true
         var treeFellers: MutableList<String> = mutableListOf("ditto")
-        val maxTreeSize: Int = 200
+        val maxTreeSize: Int = 600
+        val verticalSearchRange: Int = 100
+        val leavesSearchRadius: Int = 20
 
         @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
         var typeFellsTrees: CobbleworkersConfigPokemonType = CobbleworkersConfigPokemonType.FIGHTING
