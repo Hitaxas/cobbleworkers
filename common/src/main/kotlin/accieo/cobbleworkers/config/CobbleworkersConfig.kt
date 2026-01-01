@@ -87,6 +87,9 @@ class CobbleworkersConfig : ConfigData {
     @ConfigEntry.Gui.CollapsibleObject
     var treefellers = TreeFellingGroup()
 
+    @ConfigEntry.Gui.CollapsibleObject
+    var electricians = ElectriciansGroup()
+
     class GeneralGroup {
         @ConfigEntry.BoundedDiscrete(min = 10, max = 30)
         var blocksScannedPerTick = 15
@@ -348,5 +351,16 @@ class CobbleworkersConfig : ConfigData {
 
         @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
         var typeFellsTrees: CobbleworkersConfigPokemonType = CobbleworkersConfigPokemonType.FIGHTING
+    }
+
+    class ElectriciansGroup {
+        val electriciansEnabled = true
+        val electricians: MutableList<String> = mutableListOf("ditto")
+        val drainStamina = false
+        val fePerCharge: Int = 2000
+        val ticksPerCharge: Int = 100
+
+        @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
+        var typePowersOvens: CobbleworkersConfigPokemonType = CobbleworkersConfigPokemonType.ELECTRIC
     }
 }

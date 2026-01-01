@@ -50,7 +50,8 @@ object WorkerDispatcher {
         Scout,
         SnowGenerator,
         TumblestoneHarvester,
-        TreeFeller
+        TreeFeller,
+        Electrician
     )
 
     /**
