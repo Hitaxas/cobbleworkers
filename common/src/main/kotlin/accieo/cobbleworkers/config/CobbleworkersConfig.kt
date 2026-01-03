@@ -356,7 +356,6 @@ class CobbleworkersConfig : ConfigData {
     class ElectriciansGroup {
         val electriciansEnabled = true
         val electricians: MutableList<String> = mutableListOf("ditto")
-        val drainStamina = false
         val fePerCharge: Int = 2000
         val ticksPerCharge: Int = 100
 

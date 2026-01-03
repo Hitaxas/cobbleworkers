@@ -33,10 +33,13 @@ object Electrician : Worker {
     private val config get() = CobbleworkersConfigHolder.config.electricians
     private val pokemonPoweringOvens = ConcurrentHashMap<UUID, BlockPos>()
     private val lastSoundTime = ConcurrentHashMap<UUID, Long>()
-    private val cooldownTicks get() = config.ticksPerCharge.toLong()
     private val lastPowerTime = ConcurrentHashMap<UUID, Long>()
 
+    private val lastCookingSpeedBoost = ConcurrentHashMap<BlockPos, Long>()
+
+    private val cooldownTicks get() = config.ticksPerCharge.toLong()
     private const val SOUND_INTERVAL = 30L
+    private const val COOKING_SPEED_BOOST_INTERVAL = 2L
 
     override val jobType: JobType = JobType.Electrician
 
@@ -50,7 +53,6 @@ object Electrician : Worker {
         if (!accieo.cobbleworkers.utilities.CobbleworkersWorkToggle.canWork(pokemonEntity.pokemon)) {
             return false
         }
-
         if (!config.electriciansEnabled) return false
         return CobbleworkersTypeUtils.isAllowedByType(config.typePowersOvens, pokemonEntity) ||
                 isDesignatedElectrician(pokemonEntity)
@@ -62,6 +64,10 @@ object Electrician : Worker {
 
     private fun interruptWork(pokemonEntity: PokemonEntity, world: World) {
         val uuid = pokemonEntity.pokemon.uuid
+        val tendingPos = pokemonPoweringOvens[uuid]
+        if (tendingPos != null) {
+            lastCookingSpeedBoost.remove(tendingPos)
+        }
         pokemonPoweringOvens.remove(uuid)
         lastSoundTime.remove(uuid)
         CobbleworkersNavigationUtils.releaseTarget(uuid, world)
@@ -90,51 +96,47 @@ object Electrician : Worker {
                 return
             }
 
-            if (!needsPower(world, poweringPos)) {
-                interruptWork(pokemonEntity, world)
-                return
-            }
+            val stillNeedsPower = needsPower(world, poweringPos)
+            val stillCooking = isCooking(world, poweringPos)
 
-            if (!hasItemsToCook(world, poweringPos)) {
+            if (!stillNeedsPower && !stillCooking) {
                 interruptWork(pokemonEntity, world)
                 return
             }
 
             pokemonEntity.navigation.stop()
+            lookAtOven(pokemonEntity, poweringPos)
 
-            val ovenCenter = poweringPos.toCenterPos()
-            val dx = ovenCenter.x - pokemonEntity.x
-            val dz = ovenCenter.z - pokemonEntity.z
-            val yaw = (Math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
-            pokemonEntity.headYaw = yaw
-            pokemonEntity.bodyYaw = yaw
-            pokemonEntity.yaw = yaw
+            if (isLegendaryOrMythical(pokemonEntity) && stillCooking) {
+                val lastBoost = lastCookingSpeedBoost[poweringPos] ?: 0L
+                if (now - lastBoost >= COOKING_SPEED_BOOST_INTERVAL) {
+                    addEnergyToOven(world, poweringPos, true)
+                    lastCookingSpeedBoost[poweringPos] = now
+                }
+            }
+
+            val lastPower = lastPowerTime[pokemonId] ?: 0L
+            val isLegendary = isLegendaryOrMythical(pokemonEntity)
+            val effectiveCooldown = if (isLegendary) cooldownTicks / 2 else cooldownTicks
+
+            if (stillNeedsPower && now - lastPower >= effectiveCooldown) {
+                addEnergyToOven(world, poweringPos, false)
+                lastPowerTime[pokemonId] = now
+            }
 
             val lastSound = lastSoundTime[pokemonId] ?: 0L
             if (now - lastSound >= SOUND_INTERVAL) {
                 playElectricSound(world, poweringPos)
                 lastSoundTime[pokemonId] = now
             }
-
             spawnElectricParticles(world, pokemonEntity, poweringPos)
-
-            val lastPower = lastPowerTime[pokemonId] ?: 0L
-            if (now - lastPower >= cooldownTicks) {
-                addEnergyToOven(world, poweringPos)
-                lastPowerTime[pokemonId] = now
-
-                if (config.drainStamina) {
-                    val currentHP = pokemonEntity.pokemon.currentHealth
-                    val newHP = (currentHP - 5).coerceAtLeast(1)
-                    pokemonEntity.pokemon.currentHealth = newHP
-                }
-            }
-
             return
         }
 
         val lastTime = lastPowerTime[pokemonId] ?: 0L
-        if (now - lastTime < cooldownTicks) return
+        val isLegendary = isLegendaryOrMythical(pokemonEntity)
+        val searchCooldown = if (isLegendary) cooldownTicks / 2 else cooldownTicks
+        if (now - lastTime < searchCooldown) return
 
         val closestOven = findClosestOven(world, origin) ?: return
         val currentTarget = CobbleworkersNavigationUtils.getTarget(pokemonId, world)
@@ -153,7 +155,7 @@ object Electrician : Worker {
         }
 
         if (CobbleworkersNavigationUtils.isPokemonAtPosition(pokemonEntity, closestOven)) {
-            if (hasItemsToCook(world, closestOven) && needsPower(world, closestOven)) {
+            if (hasItemsToCook(world, closestOven) && (needsPower(world, closestOven) || isCooking(world, closestOven))) {
                 pokemonPoweringOvens[pokemonId] = closestOven
                 lastSoundTime[pokemonId] = now
                 positionPokemonAtOven(world, closestOven, pokemonEntity)
@@ -164,17 +166,25 @@ object Electrician : Worker {
         }
     }
 
+    private fun lookAtOven(pokemonEntity: PokemonEntity, pos: BlockPos) {
+        val ovenCenter = pos.toCenterPos()
+        val dx = ovenCenter.x - pokemonEntity.x
+        val dz = ovenCenter.z - pokemonEntity.z
+        val yaw = (Math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
+        pokemonEntity.headYaw = yaw
+        pokemonEntity.bodyYaw = yaw
+        pokemonEntity.yaw = yaw
+    }
+
     private fun findClosestOven(world: World, origin: BlockPos): BlockPos? {
         val possibleTargets = CobbleworkersCacheManager.getTargets(origin, jobType)
         if (possibleTargets.isEmpty()) return null
 
         return possibleTargets
             .filter { pos ->
-                if (!blockValidator(world, pos)) return@filter false
-                if (!hasItemsToCook(world, pos)) return@filter false
-                if (!needsPower(world, pos)) return@filter false
-                if (!hasHeatingUnit(world, pos)) return@filter false
-                !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
+                blockValidator(world, pos) && hasItemsToCook(world, pos) &&
+                        (needsPower(world, pos) || isCooking(world, pos)) && hasHeatingUnit(world, pos) &&
+                        !CobbleworkersNavigationUtils.isRecentlyExpired(pos, world)
             }
             .minByOrNull { it.getSquaredDistance(origin) }
     }
@@ -182,56 +192,61 @@ object Electrician : Worker {
     private fun hasHeatingUnit(world: World, pos: BlockPos): Boolean {
         val blockEntity = world.getBlockEntity(pos) ?: return false
         val nbt = blockEntity.createNbt(world.registryManager)
-
         return nbt.getBoolean("HasPowerUpgrade")
     }
 
     private fun needsPower(world: World, pos: BlockPos): Boolean {
         val blockEntity = world.getBlockEntity(pos) ?: return false
         val nbt = blockEntity.createNbt(world.registryManager)
+        return nbt.getBoolean("HasPowerUpgrade") && nbt.getInt("EnergyStored") < 8000
+    }
 
-        if (!nbt.getBoolean("HasPowerUpgrade")) {
-            return false
+    private fun isCooking(world: World, pos: BlockPos): Boolean {
+        val blockEntity = world.getBlockEntity(pos) ?: return false
+        val nbt = blockEntity.createNbt(world.registryManager)
+        if (nbt.contains("CookTimes")) {
+            val cookTimes = nbt.getIntArray("CookTimes")
+            return cookTimes.any { it > 0 } // Active progress found
         }
-
-        val energyStored = nbt.getInt("EnergyStored")
-
-        return energyStored < 8000
+        return false
     }
 
     private fun hasItemsToCook(world: World, pos: BlockPos): Boolean {
         val blockEntity = world.getBlockEntity(pos) ?: return false
         val nbt = blockEntity.createNbt(world.registryManager)
-
         if (nbt.contains("ItemHandler")) {
-            val itemHandler = nbt.getCompound("ItemHandler")
-            if (itemHandler.contains("Items")) {
-                val items = itemHandler.getList("Items", 10)
-                for (i in 0 until items.size) {
-                    val itemStackNbt = items.getCompound(i)
-                    if (itemStackNbt.contains("Slot") && itemStackNbt.contains("id")) {
-                        val slot = itemStackNbt.getByte("Slot").toInt()
-                        if (slot in 0..2 || slot in 7..15) {
-                            return true
-                        }
-                    }
-                }
+            val items = nbt.getCompound("ItemHandler").getList("Items", 10)
+            for (i in 0 until items.size) {
+                val slot = items.getCompound(i).getByte("Slot").toInt()
+                if (slot in 0..2 || slot in 7..15) return true
             }
         }
         return false
     }
 
-    private fun addEnergyToOven(world: World, ovenPos: BlockPos) {
+    private fun addEnergyToOven(world: World, ovenPos: BlockPos, applyBoost: Boolean) {
         val blockEntity = world.getBlockEntity(ovenPos) ?: return
         val registryLookup = world.registryManager
         val nbt = blockEntity.createNbt(registryLookup)
 
-        val feToAdd = config.fePerCharge
-
         val currentEnergy = nbt.getInt("EnergyStored")
-        val maxEnergy = 10000 // Standard max for heating unit
-        val newEnergy = (currentEnergy + feToAdd).coerceAtMost(maxEnergy)
-        nbt.putInt("EnergyStored", newEnergy)
+        nbt.putInt("EnergyStored", (currentEnergy + config.fePerCharge).coerceAtMost(10000))
+
+        if (applyBoost && nbt.contains("CookTimes")) {
+            val cookTimes = nbt.getIntArray("CookTimes")
+            val maxCookTimes = if (nbt.contains("MaxCookTimes")) nbt.getIntArray("MaxCookTimes") else IntArray(cookTimes.size) { 200 }
+            var modified = false
+
+            for (i in cookTimes.indices) {
+                val current = cookTimes[i]
+                val max = if (i < maxCookTimes.size) maxCookTimes[i] else 200
+                if (current in 1 until max - 3) {
+                    cookTimes[i] = (current + 5).coerceAtMost(max - 2) // Mirrored safer logic
+                    modified = true
+                }
+            }
+            if (modified) nbt.putIntArray("CookTimes", cookTimes)
+        }
 
         try {
             blockEntity.read(nbt, registryLookup)
@@ -239,40 +254,22 @@ object Electrician : Worker {
             try {
                 val readNbtMethod = blockEntity.javaClass.getMethod("readNbt", NbtCompound::class.java)
                 readNbtMethod.invoke(blockEntity, nbt)
-            } catch (ex2: Exception) {
-                try {
-                    val energyField = blockEntity.javaClass.getDeclaredField("energyStored")
-                    energyField.isAccessible = true
-                    energyField.setInt(blockEntity, newEnergy)
-                } catch (ex3: Exception) {
-                }
-            }
+            } catch (_: Exception) {}
         }
 
         blockEntity.markDirty()
-
         val state = world.getBlockState(ovenPos)
         try {
             state.entries.keys.find { p -> p.name == "active" && p is BooleanProperty }?.let { prop ->
                 world.setBlockState(ovenPos, state.with(prop as BooleanProperty, true), 3)
             }
-        } catch (e: Exception) {
-        }
-
-        world.updateNeighbors(ovenPos, state.block)
+        } catch (_: Exception) {}
         world.updateListeners(ovenPos, state, state, 3)
     }
 
     private fun playElectricSound(world: World, pos: BlockPos) {
         if (world is ServerWorld) {
-            world.playSound(
-                null,
-                pos,
-                SoundEvents.ENTITY_GUARDIAN_ATTACK,
-                SoundCategory.BLOCKS,
-                1.75f,
-                1.5f
-            )
+            world.playSound(null, pos, SoundEvents.ENTITY_GUARDIAN_ATTACK, SoundCategory.BLOCKS, 1.75f, 1.5f)
         }
     }
 
@@ -355,38 +352,17 @@ object Electrician : Worker {
         }
     }
 
-
     private fun positionPokemonAtOven(world: World, ovenPos: BlockPos, pokemonEntity: PokemonEntity) {
         val state = world.getBlockState(ovenPos)
-
         val facing = try {
-            state.entries.keys.find { it.name == "facing" }?.let { prop ->
-                state.get(prop) as? net.minecraft.util.math.Direction
-            }
-        } catch (e: Exception) {
-            null
-        } ?: net.minecraft.util.math.Direction.NORTH
+            state.entries.keys.find { it.name == "facing" }?.let { state.get(it) as? net.minecraft.util.math.Direction }
+        } catch (_: Exception) { null } ?: net.minecraft.util.math.Direction.NORTH
 
         val offset = facing.vector
-        val targetPos = ovenPos.add(offset.x * 2, 0, offset.z * 2)
-        val targetCenter = targetPos.toCenterPos()
+        val targetCenter = ovenPos.add(offset.x * 2, 0, offset.z * 2).toCenterPos()
 
-        pokemonEntity.refreshPositionAndAngles(
-            targetCenter.x,
-            pokemonEntity.y,
-            targetCenter.z,
-            pokemonEntity.yaw,
-            pokemonEntity.pitch
-        )
-
-        val ovenCenter = ovenPos.toCenterPos()
-        val dx = ovenCenter.x - pokemonEntity.x
-        val dz = ovenCenter.z - pokemonEntity.z
-        val yaw = (Math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
-        pokemonEntity.headYaw = yaw
-        pokemonEntity.bodyYaw = yaw
-        pokemonEntity.yaw = yaw
-
+        pokemonEntity.refreshPositionAndAngles(targetCenter.x, pokemonEntity.y, targetCenter.z, pokemonEntity.yaw, pokemonEntity.pitch)
+        lookAtOven(pokemonEntity, ovenPos)
         pokemonEntity.navigation.stop()
         pokemonEntity.setVelocity(0.0, pokemonEntity.velocity.y, 0.0)
     }
@@ -398,28 +374,16 @@ object Electrician : Worker {
     }
 
     private fun isDesignatedElectrician(pokemonEntity: PokemonEntity): Boolean {
-        val speciesName = pokemonEntity.pokemon.species.translatedName.string.lowercase()
-        return config.electricians.any { it.lowercase() == speciesName }
+        return config.electricians.any { it.lowercase() == pokemonEntity.pokemon.species.translatedName.string.lowercase() }
     }
 
     override fun isActivelyWorking(pokemon: PokemonEntity): Boolean {
         val uuid = pokemon.pokemon.uuid
         val pos = pokemonPoweringOvens[uuid] ?: return false
-
-        if (!blockValidator(pokemon.world, pos) ||
-            !hasItemsToCook(pokemon.world, pos) ||
-            !needsPower(pokemon.world, pos)) {
-            pokemonPoweringOvens.remove(uuid)
-            lastSoundTime.remove(uuid)
-            return false
-        }
-
-        return true
+        return blockValidator(pokemon.world, pos) && (needsPower(pokemon.world, pos) || isCooking(pokemon.world, pos))
     }
 
     override fun interrupt(pokemonEntity: PokemonEntity, world: World) {
-        try {
-            interruptWork(pokemonEntity, world)
-        } catch (_: Exception) {}
+        try { interruptWork(pokemonEntity, world) } catch (_: Exception) {}
     }
 }
