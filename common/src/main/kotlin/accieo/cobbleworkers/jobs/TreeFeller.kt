@@ -287,7 +287,7 @@ object TreeFeller : Worker {
     }
 
     private fun findNearestTree(world: World, origin: BlockPos): BlockPos? {
-        val horizontalRadius = 32
+        val horizontalRadius = config.horizontalRadius
         val verticalRange = config.verticalSearchRange
         var best: BlockPos? = null
         var bestD = Double.MAX_VALUE

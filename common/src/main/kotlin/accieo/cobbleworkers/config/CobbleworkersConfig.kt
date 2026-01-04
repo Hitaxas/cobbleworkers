@@ -346,6 +346,7 @@ class CobbleworkersConfig : ConfigData {
         var treeFellersEnabled = true
         var treeFellers: MutableList<String> = mutableListOf("ditto")
         val maxTreeSize: Int = 600
+        val horizontalRadius: Int = 16
         val verticalSearchRange: Int = 100
         val leavesSearchRadius: Int = 20
 
