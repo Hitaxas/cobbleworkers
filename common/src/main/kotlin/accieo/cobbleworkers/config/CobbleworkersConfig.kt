@@ -356,8 +356,8 @@ class CobbleworkersConfig : ConfigData {
     class ElectriciansGroup {
         val electriciansEnabled = true
         val electricians: MutableList<String> = mutableListOf("ditto")
-        val fePerCharge: Int = 2000
-        val ticksPerCharge: Int = 100
+        val fePerCharge: Int = 10000
+        val ticksPerCharge: Int = 10
 
         @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
         var typePowersOvens: CobbleworkersConfigPokemonType = CobbleworkersConfigPokemonType.ELECTRIC
