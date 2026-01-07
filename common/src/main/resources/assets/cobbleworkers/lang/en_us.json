@@ -125,5 +125,7 @@
   "text.autoconfig.cobbleworkers.option.scouts.structureTags": "Structure tags",
   "text.autoconfig.cobbleworkers.option.scouts.typeScouts": "Pokémon type that generates maps",
   "block.cobbleworkers.pokebed": "PokeBed",
-  "item.cobbleworkers.pokebed": "PokeBed"
+  "item.cobbleworkers.pokebed": "PokeBed",
+  "cobbleworkers.ui.interact.enable_work": "Enable Work",
+  "cobbleworkers.ui.interact.disable_work": "Disable Work"
 }

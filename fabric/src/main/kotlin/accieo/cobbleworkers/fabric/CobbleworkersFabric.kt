@@ -17,6 +17,7 @@ import accieo.cobbleworkers.sanity.SanityPlatformNetworking
 import accieo.cobbleworkers.sanity.SanityPlatformNetworkingInstance
 import accieo.cobbleworkers.network.fabric.CobbleworkersFabricPackets
 import accieo.cobbleworkers.network.fabric.FabricSanityNetworking
+import accieo.cobbleworkers.network.fabric.FabricWorkToggleNetworking
 import accieo.cobbleworkers.party.PartyWorkerFabric
 import accieo.cobbleworkers.sanity.SanityEntry
 import accieo.cobbleworkers.sanity.SanitySyncPayload
@@ -47,6 +48,7 @@ object CobbleworkersFabric : ModInitializer {
         Cobbleworkers.init()
         CobbleworkersFabricPackets.registerCommon()
         FabricSanityNetworking.registerServerHandlers()
+        FabricWorkToggleNetworking.register()
         PartyWorkerFabric.init()
         CobbleworkersBlocks.register()
 

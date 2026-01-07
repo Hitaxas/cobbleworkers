@@ -60,6 +60,7 @@ object CobbleworkersNeoForge {
     private fun onRegisterPayloads(event: RegisterPayloadHandlersEvent) {
         val registrar = event.registrar("1.0.0")
 
+        // Sanity Sync (Server -> Client)
         registrar.playToClient(
             SanitySyncPayload.ID,
             SanitySyncPayload.CODEC

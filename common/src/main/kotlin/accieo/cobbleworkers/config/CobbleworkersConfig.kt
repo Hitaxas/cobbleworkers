@@ -90,6 +90,9 @@ class CobbleworkersConfig : ConfigData {
     @ConfigEntry.Gui.CollapsibleObject
     var electricians = ElectriciansGroup()
 
+    @ConfigEntry.Gui.CollapsibleObject
+    val mechanics: PokemonMechanicsGroup = PokemonMechanicsGroup()
+
     class GeneralGroup {
         @ConfigEntry.BoundedDiscrete(min = 10, max = 30)
         var blocksScannedPerTick = 15
